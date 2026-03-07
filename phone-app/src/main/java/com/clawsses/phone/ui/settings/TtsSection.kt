@@ -32,6 +32,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -66,6 +67,7 @@ fun TtsSection(
     val selectedVoiceId by ttsSettingsManager.selectedVoiceId.collectAsState()
     val selectedVoiceName by ttsSettingsManager.selectedVoiceName.collectAsState()
     val isEnabled by ttsSettingsManager.isEnabled.collectAsState()
+    val speed by ttsSettingsManager.speed.collectAsState()
 
     var localApiKey by remember(apiKey) { mutableStateOf(apiKey) }
     var showApiKey by remember { mutableStateOf(false) }
@@ -260,6 +262,50 @@ fun TtsSection(
                                     modifier = Modifier.size(24.dp),
                                 )
                             }
+                        }
+                    }
+                }
+
+                // Speed slider (only show when API key is set)
+                if (hasApiKey) {
+                    Spacer(Modifier.height(12.dp))
+
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "Speed",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "%.2f\u00D7".format(speed),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Slider(
+                            value = speed,
+                            onValueChange = { ttsSettingsManager.setSpeed(it) },
+                            valueRange = TtsSettingsManager.MIN_SPEED..TtsSettingsManager.MAX_SPEED,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                "Slower",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "Faster",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }

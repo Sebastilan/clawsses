@@ -59,12 +59,15 @@ class ElevenLabsClient {
     suspend fun synthesize(
         apiKey: String,
         voiceId: String,
-        text: String
+        text: String,
+        speed: Double = 1.0
     ): Result<InputStream> = withContext(Dispatchers.IO) {
         try {
+            val voiceSettings = if (speed != 1.0) VoiceSettings(speed = speed) else null
             val requestBody = SynthesisRequest(
                 text = text,
-                modelId = MODEL_ID
+                modelId = MODEL_ID,
+                voiceSettings = voiceSettings
             )
 
             val request = Request.Builder()
@@ -111,7 +114,12 @@ data class VoicesResponse(
     @SerializedName("voices") val voices: List<Voice>
 )
 
+data class VoiceSettings(
+    @SerializedName("speed") val speed: Double
+)
+
 data class SynthesisRequest(
     @SerializedName("text") val text: String,
-    @SerializedName("model_id") val modelId: String
+    @SerializedName("model_id") val modelId: String,
+    @SerializedName("voice_settings") val voiceSettings: VoiceSettings? = null
 )

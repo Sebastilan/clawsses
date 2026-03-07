@@ -53,7 +53,8 @@ class TtsPlaybackManager(
             try {
                 Log.d(TAG, "Synthesizing TTS for text: ${text.take(50)}...")
 
-                val result = client.synthesize(apiKey, voiceId, text)
+                val speed = settings.speed.value.toDouble()
+                val result = client.synthesize(apiKey, voiceId, text, speed)
 
                 result.onSuccess { inputStream ->
                     // Write to temp file for MediaPlayer
