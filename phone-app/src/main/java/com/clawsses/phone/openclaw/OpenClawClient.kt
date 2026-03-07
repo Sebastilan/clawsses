@@ -106,26 +106,32 @@ class OpenClawClient(
     private var challengeNonce: String? = null
 
     fun connect(host: String, port: Int, token: String) {
-        // Strip any protocol prefix the user might have entered
-        val cleanHost = host
-            .removePrefix("ws://")
-            .removePrefix("wss://")
-            .removePrefix("http://")
-            .removePrefix("https://")
-            .trimEnd('/')
-
-        this.host = cleanHost
+        this.host = host.trimEnd('/')
         this.port = port
         this.token = token
         this.shouldReconnect = true
 
-        val url = "ws://$cleanHost:$port"
+        // Build URL: use host as-is if it starts with ws:// or wss://, otherwise prepend ws://
+        val url = when {
+            host.startsWith("ws://") || host.startsWith("wss://") -> {
+                // User provided full URL - append port if not already in URL
+                val trimmed = host.trimEnd('/')
+                if (trimmed.contains(Regex(":\\d+$"))) trimmed else "$trimmed:$port"
+            }
+            else -> "ws://${host.trimEnd('/')}:$port"
+        }
+        val originHost = host
+            .removePrefix("ws://")
+            .removePrefix("wss://")
+            .trimEnd('/')
+        val originUrl = "http://$originHost" + (if (originHost.contains(Regex(":\\d+$"))) "" else ":$port")
+
         Log.i(TAG, "Connecting to OpenClaw Gateway: $url")
         _connectionState.value = ConnectionState.Connecting
 
         val request = Request.Builder()
             .url(url)
-            .header("Origin", "http://$cleanHost:$port")
+            .header("Origin", originUrl)
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {

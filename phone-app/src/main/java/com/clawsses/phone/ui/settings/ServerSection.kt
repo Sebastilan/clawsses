@@ -169,10 +169,20 @@ private fun ConnectionStatusRow(
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
-                text = "ws://$host:$port",
+                text = buildDisplayUrl(host, port),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+private fun buildDisplayUrl(host: String, port: String): String {
+    val trimmed = host.trimEnd('/')
+    return when {
+        trimmed.startsWith("ws://") || trimmed.startsWith("wss://") -> {
+            if (trimmed.contains(Regex(":\\d+$"))) trimmed else "$trimmed:$port"
+        }
+        else -> "ws://$trimmed:$port"
     }
 }
