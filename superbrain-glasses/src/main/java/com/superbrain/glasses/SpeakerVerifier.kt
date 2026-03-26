@@ -50,7 +50,7 @@ class SpeakerVerifier(private val context: Context) {
                 debug = false,
                 provider = "cpu",
             )
-            extractor = SpeakerEmbeddingExtractor(config)
+            extractor = SpeakerEmbeddingExtractor(null, config)
             manager = SpeakerEmbeddingManager(extractor!!.dim())
 
             // Load saved embeddings

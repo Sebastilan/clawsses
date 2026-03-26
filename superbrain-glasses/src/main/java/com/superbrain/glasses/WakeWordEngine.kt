@@ -92,7 +92,7 @@ class WakeWordEngine(private val context: Context) {
                 numTrailingBlanks = 1,
                 maxActivePaths = 4,
             )
-            keywordSpotter = KeywordSpotter(config)
+            keywordSpotter = KeywordSpotter(null, config)
             Log.i(TAG, "KWS initialized successfully")
             return true
         } catch (e: Exception) {
