@@ -60,6 +60,10 @@ class AdbController : BroadcastReceiver() {
                 if (ssid.isNotBlank()) service.handleWifi(ssid, password)
             }
             "WIFI_STATUS" -> service.handleWifiStatus()
+            "WAKE_ENABLE" -> service.handleWakeEnable()
+            "WAKE_DISABLE" -> service.handleWakeDisable()
+            "ENROLL_START" -> service.handleEnrollStart()
+            "ENROLL_CLEAR" -> service.handleEnrollClear()
             else -> Log.w(TAG, "Unknown command: $command")
         }
     }

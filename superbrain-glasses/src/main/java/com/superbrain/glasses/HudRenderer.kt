@@ -34,7 +34,13 @@ data class HudState(
     val statusText: String = "SuperBrain",
     val streamingText: String = "",
     val asrText: String = "",
-    val asrIsFinal: Boolean = false
+    val asrIsFinal: Boolean = false,
+    // Wake word / enrollment state
+    val wakeWordActive: Boolean = false,
+    val modelsLoaded: Boolean = false,
+    val enrolling: Boolean = false,
+    val enrollProgress: Int = 0,
+    val enrollNeeded: Int = 3
 )
 
 data class HudMessage(
@@ -131,10 +137,16 @@ fun HudScreen(hudState: StateFlow<HudState>) {
 
         Spacer(modifier = Modifier.height(2.dp))
 
+        // ── Enrollment overlay ──
+        if (state.enrolling) {
+            EnrollmentBar(progress = state.enrollProgress, needed = state.enrollNeeded)
+        }
+
         // ── Bottom Status Bar ──
         BottomBar(
             isListening = state.isListening,
-            isStreaming = state.isStreaming
+            isStreaming = state.isStreaming,
+            wakeWordActive = state.wakeWordActive
         )
     }
 }
@@ -223,7 +235,7 @@ private fun ChatBubble(msg: HudMessage) {
 }
 
 @Composable
-private fun BottomBar(isListening: Boolean, isStreaming: Boolean) {
+private fun BottomBar(isListening: Boolean, isStreaming: Boolean, wakeWordActive: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -231,11 +243,16 @@ private fun BottomBar(isListening: Boolean, isStreaming: Boolean) {
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val micColor = if (isListening) HudColors.yellow else HudColors.dimGreen
-        Text(
-            text = "\uD83C\uDF99 Listen",
-            style = TextStyle(fontFamily = JetBrainsMono, fontSize = 10.sp, color = micColor)
-        )
+        if (wakeWordActive && !isListening) {
+            // Wake word mode: show "say 小C"
+            PulsingText("say \u5C0FC", HudColors.dimGreen, 10.sp)
+        } else {
+            val micColor = if (isListening) HudColors.yellow else HudColors.dimGreen
+            Text(
+                text = "\uD83C\uDF99 Listen",
+                style = TextStyle(fontFamily = JetBrainsMono, fontSize = 10.sp, color = micColor)
+            )
+        }
 
         Text(
             text = "\uD83D\uDCF7 Photo",
@@ -247,6 +264,26 @@ private fun BottomBar(isListening: Boolean, isStreaming: Boolean) {
         Text(
             text = streamIcon,
             style = TextStyle(fontFamily = JetBrainsMono, fontSize = 10.sp, color = streamColor)
+        )
+    }
+}
+
+@Composable
+private fun EnrollmentBar(progress: Int, needed: Int) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(HudColors.background)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "Enroll: say '\u5C0FC' ($progress/$needed)",
+            style = TextStyle(
+                fontFamily = JetBrainsMono,
+                fontSize = 12.sp,
+                color = HudColors.yellow,
+            )
         )
     }
 }

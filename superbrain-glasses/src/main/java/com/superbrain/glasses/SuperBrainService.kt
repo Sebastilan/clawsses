@@ -57,6 +57,12 @@ class SuperBrainService : Service() {
     lateinit var configStore: ConfigStore; private set
     private lateinit var adbController: AdbController
 
+    // Wake word + Speaker verification
+    lateinit var wakeWordEngine: WakeWordEngine; private set
+    lateinit var speakerVerifier: SpeakerVerifier; private set
+    private var wakeWordEnabled = false
+    private var modelsReady = false
+
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -90,6 +96,11 @@ class SuperBrainService : Service() {
         ttsPlayer = TtsPlayer(this)
         otaUpdater = OtaUpdater(this, scope)
         wifiController = WifiController(this)
+
+        // Initialize wake word + speaker verification
+        wakeWordEngine = WakeWordEngine(this)
+        speakerVerifier = SpeakerVerifier(this)
+        initModels()
 
         // Register ADB receiver on Service (survives Activity death)
         registerAdbReceiver()
@@ -229,11 +240,156 @@ class SuperBrainService : Service() {
             appendLine("TTS: enabled=${ttsPlayer.enabled}")
             appendLine("OTA: updating=${otaUpdater.isUpdating}")
             appendLine("WiFi: ${wifiController.getWifiStatus()}")
+            appendLine("WakeWord: enabled=$wakeWordEnabled, running=${wakeWordEngine.isRunning.value}, models=$modelsReady")
+            appendLine("Speaker: enrolled=${speakerVerifier.isEnrolled}")
             appendLine("Config: $configStore")
             appendLine("Messages: ${_hudState.value.messages.size}")
         }
         Log.i(TAG, status)
         addSystemMessage(status.trim())
+    }
+
+    // ── Wake word / Speaker verification handlers ──
+
+    fun handleWakeEnable() {
+        if (!modelsReady) {
+            addSystemMessage("Models not loaded. Push models to device first.")
+            return
+        }
+        if (wakeWordEnabled) return
+        wakeWordEnabled = true
+        _hudState.update { it.copy(wakeWordActive = true) }
+        wakeWordEngine.start(scope) { keyword, audioSamples ->
+            onWakeWordDetected(keyword, audioSamples)
+        }
+        addSystemMessage("Wake word enabled: say '小C'")
+    }
+
+    fun handleWakeDisable() {
+        wakeWordEnabled = false
+        wakeWordEngine.stop()
+        _hudState.update { it.copy(wakeWordActive = false) }
+        addSystemMessage("Wake word disabled")
+    }
+
+    fun handleEnrollStart() {
+        if (!modelsReady) {
+            addSystemMessage("Models not loaded")
+            return
+        }
+        speakerVerifier.startEnrollment()
+        _hudState.update { it.copy(
+            enrolling = true,
+            enrollProgress = 0,
+            enrollNeeded = speakerVerifier.enrollNeeded
+        ) }
+        addSystemMessage("Say '小C' ${speakerVerifier.enrollNeeded} times to enroll")
+        // Temporarily stop wake word to use mic for enrollment
+        val wasEnabled = wakeWordEnabled
+        if (wasEnabled) wakeWordEngine.stop()
+        // Start recording for enrollment
+        wakeWordEngine.start(scope) { _, audioSamples ->
+            onEnrollSample(audioSamples, wasEnabled)
+        }
+    }
+
+    fun handleEnrollClear() {
+        speakerVerifier.clearEnrollment()
+        _hudState.update { it.copy(enrolling = false, enrollProgress = 0) }
+        addSystemMessage("Speaker enrollment cleared")
+    }
+
+    private fun onWakeWordDetected(keyword: String, audioSamples: FloatArray) {
+        Log.i(TAG, "Wake word detected: '$keyword'")
+
+        // Speaker verification
+        val verified = speakerVerifier.verify(audioSamples)
+        if (!verified) {
+            Log.i(TAG, "Speaker verification failed — ignoring")
+            addSystemMessage("Wake: voice not recognized")
+            return
+        }
+
+        Log.i(TAG, "Speaker verified! Starting ASR...")
+        addSystemMessage("Listening...")
+
+        // Stop wake word detection, start ASR
+        wakeWordEngine.stop()
+        handleListenStart()
+
+        // Auto-stop after silence (delegated to VPS ASR silence detection)
+        // When ASR sends is_final=true, we'll stop listening
+    }
+
+    private fun onEnrollSample(audioSamples: FloatArray, restoreWakeWord: Boolean) {
+        val complete = speakerVerifier.processEnrollment(audioSamples)
+        val progress = speakerVerifier.enrollProgress
+        _hudState.update { it.copy(enrollProgress = progress) }
+
+        if (complete) {
+            wakeWordEngine.stop()
+            _hudState.update { it.copy(enrolling = false) }
+            addSystemMessage("Enrollment complete!")
+            if (restoreWakeWord) {
+                handleWakeEnable()
+            }
+        } else if (!speakerVerifier.isEnrolling) {
+            // Enrollment was cancelled
+            wakeWordEngine.stop()
+            if (restoreWakeWord) handleWakeEnable()
+        } else {
+            addSystemMessage("Say '小C' (${progress}/${speakerVerifier.enrollNeeded})")
+        }
+    }
+
+    /**
+     * Called when ASR final result is received and we're in wake-word-triggered listening mode.
+     * Stops ASR and re-enables wake word.
+     */
+    fun onAsrComplete() {
+        if (wakeWordEnabled && !wakeWordEngine.isRunning.value) {
+            scope.launch {
+                delay(500) // Brief pause before re-enabling wake word
+                handleListenStop()
+                wakeWordEngine.start(scope) { keyword, audioSamples ->
+                    onWakeWordDetected(keyword, audioSamples)
+                }
+                Log.i(TAG, "Wake word re-enabled after ASR")
+            }
+        }
+    }
+
+    private fun initModels() {
+        scope.launch(Dispatchers.IO) {
+            val modelsDir = File(filesDir, "models")
+            if (!modelsDir.exists()) {
+                Log.i(TAG, "Models dir not found: $modelsDir — push models via ADB")
+                withContext(Dispatchers.Main) {
+                    addSystemMessage("No models. Push to ${modelsDir.absolutePath}")
+                }
+                return@launch
+            }
+
+            var ok = true
+            if (!wakeWordEngine.init(modelsDir)) {
+                Log.e(TAG, "KWS init failed")
+                ok = false
+            }
+            if (!speakerVerifier.init(modelsDir)) {
+                Log.w(TAG, "Speaker verifier init failed (non-fatal)")
+                // Speaker verification is optional
+            }
+
+            modelsReady = ok
+            withContext(Dispatchers.Main) {
+                if (ok) {
+                    addSystemMessage("Models loaded. Use WAKE_ENABLE to activate.")
+                    _hudState.update { it.copy(modelsLoaded = true) }
+                } else {
+                    addSystemMessage("Model loading failed")
+                }
+            }
+        }
     }
 
     // ── Internal ──
@@ -253,6 +409,10 @@ class SuperBrainService : Service() {
             addAction("com.superbrain.glasses.OTA")
             addAction("com.superbrain.glasses.WIFI")
             addAction("com.superbrain.glasses.WIFI_STATUS")
+            addAction("com.superbrain.glasses.WAKE_ENABLE")
+            addAction("com.superbrain.glasses.WAKE_DISABLE")
+            addAction("com.superbrain.glasses.ENROLL_START")
+            addAction("com.superbrain.glasses.ENROLL_CLEAR")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(adbController, filter, RECEIVER_EXPORTED)
@@ -337,13 +497,15 @@ class SuperBrainService : Service() {
             wsClient.asrEvents.collect { event ->
                 _hudState.update { state ->
                     if (event.isFinal) {
-                        // Final ASR result → add as user message, clear subtitle
                         val messages = state.messages + HudMessage("user", event.text)
                         state.copy(messages = messages, asrText = "", asrIsFinal = true)
                     } else {
-                        // Interim result → update subtitle
                         state.copy(asrText = event.text, asrIsFinal = false)
                     }
+                }
+                // If final ASR result and wake-word triggered, stop listening & re-enable wake word
+                if (event.isFinal && wakeWordEnabled) {
+                    onAsrComplete()
                 }
             }
         }
@@ -493,6 +655,8 @@ class SuperBrainService : Service() {
         wakeLock?.let { if (it.isHeld) it.release() }
 
         // Cleanup all components
+        wakeWordEngine.cleanup()
+        speakerVerifier.cleanup()
         wsClient.disconnect()
         audioCapture.cleanup()
         cameraCapture.cleanup()
