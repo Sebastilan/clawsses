@@ -265,6 +265,36 @@ class MainActivity : ComponentActivity() {
         addSystemMessage(text)
     }
 
+    fun handleOta(url: String) {
+        addSystemMessage("OTA: starting download...")
+        otaUpdater.startUpdate(url) { progress ->
+            addSystemMessage("OTA: $progress")
+        }
+    }
+
+    fun handleWifi(ssid: String, password: String) {
+        addSystemMessage("WiFi: connecting to $ssid...")
+        wifiController.connectToWifi(ssid, password) { success, message ->
+            scope.launch(Dispatchers.Main) {
+                addSystemMessage("WiFi: $message")
+                if (success) {
+                    // Reconnect WebSocket after WiFi change
+                    Log.i(TAG, "WiFi connected, reconnecting WebSocket...")
+                    delay(2000)
+                    if (wsClient.host.isNotBlank()) {
+                        wsClient.connect()
+                    }
+                }
+            }
+        }
+    }
+
+    fun handleWifiStatus() {
+        val status = wifiController.getWifiStatus()
+        Log.i(TAG, "WiFi: $status")
+        addSystemMessage("WiFi: $status")
+    }
+
     fun handleStatus() {
         val status = buildString {
             appendLine("=== SuperBrain Status ===")
@@ -272,6 +302,8 @@ class MainActivity : ComponentActivity() {
             appendLine("Audio: recording=${audioCapture.isRecording.value}")
             appendLine("Camera: capturing=${cameraCapture.isCapturing}")
             appendLine("TTS: enabled=${ttsPlayer.enabled}")
+            appendLine("OTA: updating=${otaUpdater.isUpdating}")
+            appendLine("WiFi: ${wifiController.getWifiStatus()}")
             appendLine("Messages: ${hudState.value.messages.size}")
         }
         Log.i(TAG, status)
@@ -313,6 +345,8 @@ class MainActivity : ComponentActivity() {
         audioCapture.cleanup()
         cameraCapture.cleanup()
         ttsPlayer.cleanup()
+        otaUpdater.cleanup()
+        wifiController.cleanup()
         scope.cancel()
     }
 }
