@@ -66,6 +66,10 @@ class WsClient(private val scope: CoroutineScope) {
     private val _wifiEvents = MutableSharedFlow<WifiEvent>(extraBufferCapacity = 4)
     val wifiEvents = _wifiEvents.asSharedFlow()
 
+    // Pending messages queue for offline buffering
+    private data class PendingMessage(val text: String, val attachments: List<Map<String, String>>?)
+    private val pendingMessages = mutableListOf<PendingMessage>()
+
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.SECONDS)  // No timeout for WebSocket
         .pingInterval(30, TimeUnit.SECONDS)
@@ -150,7 +154,12 @@ class WsClient(private val scope: CoroutineScope) {
 
     fun sendChat(text: String, attachments: List<Map<String, String>>? = null) {
         if (!authenticated) {
-            _statusMessages.tryEmit("Not connected")
+            // Buffer message for later delivery
+            synchronized(pendingMessages) {
+                pendingMessages.add(PendingMessage(text, attachments))
+            }
+            Log.i(TAG, "Buffered message (offline): ${text.take(50)}")
+            _statusMessages.tryEmit("Offline — message queued")
             return
         }
 
@@ -246,6 +255,7 @@ class WsClient(private val scope: CoroutineScope) {
                 _connected.value = true
                 _statusMessages.tryEmit("Connected & authenticated")
                 Log.i(TAG, "Authenticated successfully")
+                flushPendingMessages()
             } else {
                 val error = json.getAsJsonObject("error")?.get("message")?.asString ?: "Auth failed"
                 _statusMessages.tryEmit("Auth failed: $error")
@@ -306,6 +316,21 @@ class WsClient(private val scope: CoroutineScope) {
                 delay(RECONNECT_DELAY_MS)
                 Log.i(TAG, "Reconnecting...")
                 doConnect()
+            }
+        }
+    }
+
+    private fun flushPendingMessages() {
+        val messages: List<PendingMessage>
+        synchronized(pendingMessages) {
+            messages = pendingMessages.toList()
+            pendingMessages.clear()
+        }
+        if (messages.isNotEmpty()) {
+            Log.i(TAG, "Flushing ${messages.size} pending messages")
+            _statusMessages.tryEmit("Sending ${messages.size} queued message(s)...")
+            for (msg in messages) {
+                sendChat(msg.text, msg.attachments)
             }
         }
     }

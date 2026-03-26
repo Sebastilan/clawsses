@@ -7,6 +7,7 @@ import android.util.Log
 
 /**
  * BroadcastReceiver handling all ADB-sent intents.
+ * Registered on SuperBrainService (survives Activity death).
  * Action prefix: com.superbrain.glasses.*
  */
 class AdbController : BroadcastReceiver() {
@@ -23,8 +24,8 @@ class AdbController : BroadcastReceiver() {
         val command = action.removePrefix(PREFIX)
         Log.i(TAG, "ADB command: $command")
 
-        val app = MainActivity.instance ?: run {
-            Log.e(TAG, "MainActivity not running")
+        val service = SuperBrainService.instance ?: run {
+            Log.e(TAG, "SuperBrainService not running")
             return
         }
 
@@ -33,32 +34,32 @@ class AdbController : BroadcastReceiver() {
                 val host = intent.getStringExtra("host") ?: ""
                 val port = intent.getIntExtra("port", 8011)
                 val token = intent.getStringExtra("token") ?: ""
-                app.handleConfig(host, port, token)
+                service.handleConfig(host, port, token)
             }
-            "CONNECT" -> app.handleConnect()
-            "DISCONNECT" -> app.handleDisconnect()
+            "CONNECT" -> service.handleConnect()
+            "DISCONNECT" -> service.handleDisconnect()
             "SEND" -> {
                 val text = intent.getStringExtra("text") ?: ""
-                if (text.isNotBlank()) app.handleSend(text)
+                if (text.isNotBlank()) service.handleSend(text)
             }
-            "PHOTO" -> app.handlePhoto()
-            "LISTEN_START" -> app.handleListenStart()
-            "LISTEN_STOP" -> app.handleListenStop()
+            "PHOTO" -> service.handlePhoto()
+            "LISTEN_START" -> service.handleListenStart()
+            "LISTEN_STOP" -> service.handleListenStop()
             "DISPLAY" -> {
                 val text = intent.getStringExtra("text") ?: ""
-                if (text.isNotBlank()) app.handleDisplay(text)
+                if (text.isNotBlank()) service.handleDisplay(text)
             }
-            "STATUS" -> app.handleStatus()
+            "STATUS" -> service.handleStatus()
             "OTA" -> {
                 val url = intent.getStringExtra("url") ?: ""
-                if (url.isNotBlank()) app.handleOta(url)
+                if (url.isNotBlank()) service.handleOta(url)
             }
             "WIFI" -> {
                 val ssid = intent.getStringExtra("ssid") ?: ""
                 val password = intent.getStringExtra("password") ?: ""
-                if (ssid.isNotBlank()) app.handleWifi(ssid, password)
+                if (ssid.isNotBlank()) service.handleWifi(ssid, password)
             }
-            "WIFI_STATUS" -> app.handleWifiStatus()
+            "WIFI_STATUS" -> service.handleWifiStatus()
             else -> Log.w(TAG, "Unknown command: $command")
         }
     }

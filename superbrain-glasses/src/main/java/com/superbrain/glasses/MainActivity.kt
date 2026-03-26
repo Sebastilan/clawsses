@@ -1,359 +1,76 @@
 package com.superbrain.glasses
 
 import android.Manifest
-import android.content.IntentFilter
+import android.content.ComponentName
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
+import android.os.IBinder
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.update
 
 /**
- * SuperBrain Glasses — main activity.
- * All control via ADB broadcast intents (com.superbrain.glasses.*).
- * Connects to VPS via WebSocket, displays AI responses on 480x640 green HUD.
+ * SuperBrain Glasses — HUD Activity.
+ * Pure display layer: starts Service, binds to it, renders Compose UI.
+ * Service owns all resources (WebSocket, Camera, Audio, etc.).
  */
 class MainActivity : ComponentActivity() {
 
     companion object {
-        private const val TAG = "SuperBrain"
+        private const val TAG = "MainActivity"
         private const val PERMISSION_REQUEST_CODE = 100
-
-        @Volatile
-        var instance: MainActivity? = null
-            private set
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val hudState = MutableStateFlow(HudState(statusText = "SuperBrain"))
+    private var service: SuperBrainService? = null
+    private val fallbackState = MutableStateFlow(HudState(statusText = "Starting..."))
 
-    lateinit var wsClient: WsClient
-        private set
-    lateinit var cameraCapture: CameraCapture
-        private set
-    lateinit var audioCapture: AudioCapture
-        private set
-    lateinit var ttsPlayer: TtsPlayer
-        private set
-    lateinit var otaUpdater: OtaUpdater
-        private set
-    lateinit var wifiController: WifiController
-        private set
-    private lateinit var adbController: AdbController
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            Log.i(TAG, "Bound to SuperBrainService")
+            service = (binder as SuperBrainService.LocalBinder).service
+            // Re-set content with real state from Service
+            setContent {
+                HudScreen(service!!.hudState)
+            }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            Log.w(TAG, "SuperBrainService disconnected")
+            service = null
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        instance = this
 
         // Keep screen on
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Initialize components
-        wsClient = WsClient(scope)
-        cameraCapture = CameraCapture(this)
-        audioCapture = AudioCapture(this)
-        ttsPlayer = TtsPlayer(this)
-        otaUpdater = OtaUpdater(this, scope)
-        wifiController = WifiController(this)
-
-        // Register ADB broadcast receiver dynamically
-        registerAdbReceiver()
-
-        // Collect WebSocket events
-        collectWsEvents()
-
-        // Request permissions
+        // Request permissions before starting Service
         requestPermissionsIfNeeded()
 
-        // Set Compose content
-        setContent {
-            HudScreen(hudState)
-        }
+        // Start the foreground service
+        SuperBrainService.start(this)
 
-        Log.i(TAG, "SuperBrain Glasses started. Waiting for ADB commands.")
-        addSystemMessage("Ready. Use ADB broadcast to configure & connect.")
-    }
-
-    private fun registerAdbReceiver() {
-        adbController = AdbController()
-        val filter = IntentFilter().apply {
-            addAction("com.superbrain.glasses.CONFIG")
-            addAction("com.superbrain.glasses.CONNECT")
-            addAction("com.superbrain.glasses.DISCONNECT")
-            addAction("com.superbrain.glasses.SEND")
-            addAction("com.superbrain.glasses.PHOTO")
-            addAction("com.superbrain.glasses.LISTEN_START")
-            addAction("com.superbrain.glasses.LISTEN_STOP")
-            addAction("com.superbrain.glasses.DISPLAY")
-            addAction("com.superbrain.glasses.STATUS")
-            addAction("com.superbrain.glasses.OTA")
-            addAction("com.superbrain.glasses.WIFI")
-            addAction("com.superbrain.glasses.WIFI_STATUS")
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(adbController, filter, RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(adbController, filter)
-        }
-        Log.i(TAG, "ADB receiver registered")
-    }
-
-    private fun collectWsEvents() {
-        // Chat events (streaming)
-        scope.launch {
-            wsClient.chatEvents.collect { event ->
-                when (event) {
-                    is WsClient.ChatEvent.Delta -> {
-                        hudState.update { state ->
-                            val messages = state.messages.toMutableList()
-                            // Update or add streaming message
-                            val lastIdx = messages.indexOfLast { it.role == "assistant" && it.isStreaming }
-                            if (lastIdx >= 0) {
-                                messages[lastIdx] = messages[lastIdx].copy(content = event.text)
-                            } else {
-                                messages.add(HudMessage("assistant", event.text, isStreaming = true))
-                            }
-                            state.copy(
-                                messages = messages,
-                                isStreaming = true,
-                                streamingText = event.text
-                            )
-                        }
-                    }
-                    is WsClient.ChatEvent.Final -> {
-                        hudState.update { state ->
-                            val messages = state.messages.toMutableList()
-                            val lastIdx = messages.indexOfLast { it.role == "assistant" && it.isStreaming }
-                            if (lastIdx >= 0) {
-                                messages[lastIdx] = messages[lastIdx].copy(
-                                    content = event.text,
-                                    isStreaming = false
-                                )
-                            } else {
-                                messages.add(HudMessage("assistant", event.text))
-                            }
-                            state.copy(
-                                messages = messages,
-                                isStreaming = false,
-                                streamingText = ""
-                            )
-                        }
-                        // TTS: speak the final response
-                        ttsPlayer.speak(event.text)
-                    }
-                    is WsClient.ChatEvent.Error -> {
-                        hudState.update { state ->
-                            val messages = state.messages.toMutableList()
-                            // Close any streaming message
-                            val lastIdx = messages.indexOfLast { it.isStreaming }
-                            if (lastIdx >= 0) {
-                                messages[lastIdx] = messages[lastIdx].copy(isStreaming = false)
-                            }
-                            messages.add(HudMessage("system", "Error: ${event.message}"))
-                            state.copy(messages = messages, isStreaming = false)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Status messages
-        scope.launch {
-            wsClient.statusMessages.collect { msg ->
-                addSystemMessage(msg)
-            }
-        }
-
-        // Connection state
-        scope.launch {
-            wsClient.connected.collect { connected ->
-                hudState.update { it.copy(isConnected = connected) }
-            }
-        }
-
-        // OTA events from server
-        scope.launch {
-            wsClient.otaEvents.collect { event ->
-                Log.i(TAG, "OTA event received: v${event.version}")
-                addSystemMessage("OTA update v${event.version}")
-                handleOta(event.url)
-            }
-        }
-
-        // WiFi events from server
-        scope.launch {
-            wsClient.wifiEvents.collect { event ->
-                Log.i(TAG, "WiFi event received: ${event.ssid}")
-                handleWifi(event.ssid, event.password)
-            }
-        }
-    }
-
-    // ── ADB command handlers ──
-
-    fun handleConfig(host: String, port: Int, token: String) {
-        wsClient.host = host
-        wsClient.port = port
-        wsClient.token = token
-        Log.i(TAG, "Configured: $host:$port")
-        addSystemMessage("Config: $host:$port")
-    }
-
-    fun handleConnect() {
-        wsClient.connect()
-    }
-
-    fun handleDisconnect() {
-        wsClient.disconnect()
-    }
-
-    fun handleSend(text: String) {
-        // Add user message to HUD
-        hudState.update { state ->
-            state.copy(messages = state.messages + HudMessage("user", text))
-        }
-        wsClient.sendChat(text)
-    }
-
-    fun handlePhoto() {
-        try {
-            // Check permission first
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                != PackageManager.PERMISSION_GRANTED) {
-                Log.e(TAG, "Camera permission not granted")
-                addSystemMessage("Camera: permission denied. Grant via ADB: pm grant com.superbrain.glasses android.permission.CAMERA")
-                return
-            }
-            // Wake screen + bring to foreground so camera isn't blocked as "background"
-            wakeScreen()
-            addSystemMessage("Capturing photo...")
-            cameraCapture.capture { base64 ->
-                scope.launch(Dispatchers.Main) {
-                    if (base64 != null) {
-                        addSystemMessage("Photo captured, sending to AI...")
-                        val attachments = listOf(
-                            mapOf(
-                                "mimeType" to "image/jpeg",
-                                "content" to base64
-                            )
-                        )
-                        hudState.update { state ->
-                            state.copy(messages = state.messages + HudMessage("user", "[Photo sent]"))
-                        }
-                        wsClient.sendChat("Describe what you see in this image.", attachments)
-                    } else {
-                        addSystemMessage("Photo capture failed")
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Photo error: ${e.message}", e)
-            addSystemMessage("Photo error: ${e.message}")
-        }
-    }
-
-    fun handleListenStart() {
-        hudState.update { it.copy(isListening = true) }
-        audioCapture.start(scope) { base64Pcm ->
-            // For now, accumulate audio chunks. In the future, stream to VPS ASR.
-            // Current implementation: just capture, user sends via SEND after stopping.
-            Log.d(TAG, "Audio chunk: ${base64Pcm.length} chars")
-        }
-        addSystemMessage("Listening...")
-    }
-
-    fun handleListenStop() {
-        audioCapture.stop()
-        hudState.update { it.copy(isListening = false) }
-        addSystemMessage("Stopped listening")
-    }
-
-    fun handleDisplay(text: String) {
-        addSystemMessage(text)
-    }
-
-    fun handleOta(url: String) {
-        addSystemMessage("OTA: starting download...")
-        otaUpdater.startUpdate(url) { progress ->
-            addSystemMessage("OTA: $progress")
-        }
-    }
-
-    fun handleWifi(ssid: String, password: String) {
-        addSystemMessage("WiFi: connecting to $ssid...")
-        wifiController.connectToWifi(ssid, password) { success, message ->
-            scope.launch(Dispatchers.Main) {
-                addSystemMessage("WiFi: $message")
-                if (success) {
-                    // Reconnect WebSocket after WiFi change
-                    Log.i(TAG, "WiFi connected, reconnecting WebSocket...")
-                    delay(2000)
-                    if (wsClient.host.isNotBlank()) {
-                        wsClient.connect()
-                    }
-                }
-            }
-        }
-    }
-
-    fun handleWifiStatus() {
-        val status = wifiController.getWifiStatus()
-        Log.i(TAG, "WiFi: $status")
-        addSystemMessage("WiFi: $status")
-    }
-
-    fun handleStatus() {
-        val status = buildString {
-            appendLine("=== SuperBrain Status ===")
-            appendLine("WS: ${wsClient.getStatus()}")
-            appendLine("Audio: recording=${audioCapture.isRecording.value}")
-            appendLine("Camera: capturing=${cameraCapture.isCapturing}")
-            appendLine("TTS: enabled=${ttsPlayer.enabled}")
-            appendLine("OTA: updating=${otaUpdater.isUpdating}")
-            appendLine("WiFi: ${wifiController.getWifiStatus()}")
-            appendLine("Messages: ${hudState.value.messages.size}")
-        }
-        Log.i(TAG, status)
-        addSystemMessage(status.trim())
-    }
-
-    @Suppress("DEPRECATION")
-    private fun wakeScreen() {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        if (!pm.isInteractive) {
-            val wl = pm.newWakeLock(
-                PowerManager.FULL_WAKE_LOCK or
-                PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                PowerManager.ON_AFTER_RELEASE,
-                "superbrain:camera"
-            )
-            wl.acquire(3000)
-        }
-        // Also turn screen on via window flags
-        window.addFlags(
-            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+        // Bind to service for state observation
+        bindService(
+            Intent(this, SuperBrainService::class.java),
+            connection,
+            BIND_AUTO_CREATE
         )
-    }
 
-    private fun addSystemMessage(text: String) {
-        hudState.update { state ->
-            val messages = state.messages.toMutableList()
-            // Limit system messages to avoid bloat
-            if (messages.size > 100) {
-                messages.removeAt(0)
-            }
-            messages.add(HudMessage("system", text))
-            state.copy(messages = messages, statusText = text.take(40))
+        // Show fallback UI until Service binds
+        setContent {
+            HudScreen(fallbackState)
         }
+
+        Log.i(TAG, "MainActivity started, binding to Service")
     }
 
     private fun requestPermissionsIfNeeded() {
@@ -373,14 +90,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        instance = null
-        try { unregisterReceiver(adbController) } catch (_: Exception) {}
-        wsClient.disconnect()
-        audioCapture.cleanup()
-        cameraCapture.cleanup()
-        ttsPlayer.cleanup()
-        otaUpdater.cleanup()
-        wifiController.cleanup()
-        scope.cancel()
+        try { unbindService(connection) } catch (_: Exception) {}
+        service = null
+        Log.i(TAG, "MainActivity destroyed (Service continues running)")
     }
 }
