@@ -83,7 +83,8 @@ class CameraCapture(private val context: Context) {
             }
         }, handler)
 
-        try @Suppress("MissingPermission") {
+        @Suppress("MissingPermission")
+        try {
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     try {
