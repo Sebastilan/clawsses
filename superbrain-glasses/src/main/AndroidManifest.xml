@@ -26,21 +26,7 @@
             </intent-filter>
         </activity>
 
-        <receiver
-            android:name=".AdbController"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.superbrain.glasses.CONFIG" />
-                <action android:name="com.superbrain.glasses.CONNECT" />
-                <action android:name="com.superbrain.glasses.DISCONNECT" />
-                <action android:name="com.superbrain.glasses.SEND" />
-                <action android:name="com.superbrain.glasses.PHOTO" />
-                <action android:name="com.superbrain.glasses.LISTEN_START" />
-                <action android:name="com.superbrain.glasses.LISTEN_STOP" />
-                <action android:name="com.superbrain.glasses.DISPLAY" />
-                <action android:name="com.superbrain.glasses.STATUS" />
-            </intent-filter>
-        </receiver>
+        <!-- AdbController is registered dynamically in MainActivity -->
 
     </application>
 
