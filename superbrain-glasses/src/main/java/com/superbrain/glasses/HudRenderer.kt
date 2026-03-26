@@ -243,8 +243,11 @@ private fun BottomBar(isListening: Boolean, isStreaming: Boolean, wakeWordActive
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (wakeWordActive && !isListening) {
-            // Wake word mode: show "say 小C"
+        if (wakeWordActive && isListening) {
+            // Wake word triggered, now in continuous listen mode
+            PulsingText("\u5C0FC\u5728\u7EBF | \u8BF4'\u62DC\u62DC'\u5173\u95ED", HudColors.yellow, 10.sp)
+        } else if (wakeWordActive && !isListening) {
+            // Wake word mode: waiting for trigger
             PulsingText("say \u5C0FC", HudColors.dimGreen, 10.sp)
         } else {
             val micColor = if (isListening) HudColors.yellow else HudColors.dimGreen

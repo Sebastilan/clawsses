@@ -343,20 +343,12 @@ class SuperBrainService : Service() {
     }
 
     /**
-     * Called when ASR final result is received and we're in wake-word-triggered listening mode.
-     * Stops ASR and re-enables wake word.
+     * Called when ASR final result is received in wake-word-triggered mode.
+     * Keep recording so user can continue the conversation.
+     * Recording only stops when a sleep command arrives from VPS.
      */
     fun onAsrComplete() {
-        if (wakeWordEnabled && !wakeWordEngine.isRunning.value) {
-            scope.launch {
-                delay(500) // Brief pause before re-enabling wake word
-                handleListenStop()
-                wakeWordEngine.start(scope) { keyword, audioSamples ->
-                    onWakeWordDetected(keyword, audioSamples)
-                }
-                Log.i(TAG, "Wake word re-enabled after ASR")
-            }
-        }
+        Log.i(TAG, "ASR complete — continuing to listen for next utterance")
     }
 
     private fun initModels() {
@@ -515,6 +507,23 @@ class SuperBrainService : Service() {
             wsClient.wifiEvents.collect { event ->
                 Log.i(TAG, "WiFi event received: ${event.ssid}")
                 handleWifi(event.ssid, event.password)
+            }
+        }
+
+        // Command events (e.g. sleep → stop listening, restart wake word)
+        scope.launch {
+            wsClient.commandEvents.collect { event ->
+                if (event.action == "sleep") {
+                    Log.i(TAG, "Sleep command received — stopping listen, restarting wake word")
+                    handleListenStop()
+                    _hudState.update { it.copy(wakeWordActive = wakeWordEnabled) }
+                    if (wakeWordEnabled && !wakeWordEngine.isRunning.value) {
+                        wakeWordEngine.start(scope) { keyword, audioSamples ->
+                            onWakeWordDetected(keyword, audioSamples)
+                        }
+                    }
+                    addSystemMessage("Sleeping... say '小C' to wake")
+                }
             }
         }
     }
