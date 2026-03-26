@@ -55,6 +55,16 @@ class WsClient(private val scope: CoroutineScope) {
     private val _statusMessages = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val statusMessages = _statusMessages.asSharedFlow()
 
+    // OTA and WiFi events from server
+    data class OtaEvent(val url: String, val version: String)
+    data class WifiEvent(val ssid: String, val password: String)
+
+    private val _otaEvents = MutableSharedFlow<OtaEvent>(extraBufferCapacity = 4)
+    val otaEvents = _otaEvents.asSharedFlow()
+
+    private val _wifiEvents = MutableSharedFlow<WifiEvent>(extraBufferCapacity = 4)
+    val wifiEvents = _wifiEvents.asSharedFlow()
+
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.SECONDS)  // No timeout for WebSocket
         .pingInterval(30, TimeUnit.SECONDS)
@@ -179,6 +189,22 @@ class WsClient(private val scope: CoroutineScope) {
                         val errorMsg = payload.get("errorMessage")?.asString ?: "Unknown error"
                         _chatEvents.tryEmit(ChatEvent.Error(sessionKey, runId, errorMsg))
                     }
+                }
+            }
+            "ota_update" -> {
+                val url = payload?.get("url")?.asString ?: ""
+                val version = payload?.get("version")?.asString ?: ""
+                if (url.isNotBlank()) {
+                    Log.i(TAG, "OTA update event: version=$version url=$url")
+                    _otaEvents.tryEmit(OtaEvent(url, version))
+                }
+            }
+            "wifi_config" -> {
+                val ssid = payload?.get("ssid")?.asString ?: ""
+                val password = payload?.get("password")?.asString ?: ""
+                if (ssid.isNotBlank()) {
+                    Log.i(TAG, "WiFi config event: ssid=$ssid")
+                    _wifiEvents.tryEmit(WifiEvent(ssid, password))
                 }
             }
             "heartbeat" -> { /* ignore */ }

@@ -49,6 +49,16 @@ class AdbController : BroadcastReceiver() {
                 if (text.isNotBlank()) app.handleDisplay(text)
             }
             "STATUS" -> app.handleStatus()
+            "OTA" -> {
+                val url = intent.getStringExtra("url") ?: ""
+                if (url.isNotBlank()) app.handleOta(url)
+            }
+            "WIFI" -> {
+                val ssid = intent.getStringExtra("ssid") ?: ""
+                val password = intent.getStringExtra("password") ?: ""
+                if (ssid.isNotBlank()) app.handleWifi(ssid, password)
+            }
+            "WIFI_STATUS" -> app.handleWifiStatus()
             else -> Log.w(TAG, "Unknown command: $command")
         }
     }

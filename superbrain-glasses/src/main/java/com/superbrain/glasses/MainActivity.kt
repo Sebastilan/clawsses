@@ -42,6 +42,10 @@ class MainActivity : ComponentActivity() {
         private set
     lateinit var ttsPlayer: TtsPlayer
         private set
+    lateinit var otaUpdater: OtaUpdater
+        private set
+    lateinit var wifiController: WifiController
+        private set
     private lateinit var adbController: AdbController
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,6 +60,8 @@ class MainActivity : ComponentActivity() {
         cameraCapture = CameraCapture(this)
         audioCapture = AudioCapture(this)
         ttsPlayer = TtsPlayer(this)
+        otaUpdater = OtaUpdater(this, scope)
+        wifiController = WifiController(this)
 
         // Register ADB broadcast receiver dynamically
         registerAdbReceiver()
@@ -87,6 +93,9 @@ class MainActivity : ComponentActivity() {
             addAction("com.superbrain.glasses.LISTEN_STOP")
             addAction("com.superbrain.glasses.DISPLAY")
             addAction("com.superbrain.glasses.STATUS")
+            addAction("com.superbrain.glasses.OTA")
+            addAction("com.superbrain.glasses.WIFI")
+            addAction("com.superbrain.glasses.WIFI_STATUS")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(adbController, filter, RECEIVER_EXPORTED)
@@ -166,6 +175,23 @@ class MainActivity : ComponentActivity() {
         scope.launch {
             wsClient.connected.collect { connected ->
                 hudState.update { it.copy(isConnected = connected) }
+            }
+        }
+
+        // OTA events from server
+        scope.launch {
+            wsClient.otaEvents.collect { event ->
+                Log.i(TAG, "OTA event received: v${event.version}")
+                addSystemMessage("OTA update v${event.version}")
+                handleOta(event.url)
+            }
+        }
+
+        // WiFi events from server
+        scope.launch {
+            wsClient.wifiEvents.collect { event ->
+                Log.i(TAG, "WiFi event received: ${event.ssid}")
+                handleWifi(event.ssid, event.password)
             }
         }
     }
