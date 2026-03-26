@@ -13,8 +13,6 @@ dependencyResolutionManagement {
         mavenCentral()
         // Rokid Maven repository for CXR SDKs
         maven { url = uri("https://maven.rokid.com/repository/maven-public/") }
-        // Sherpa-onnx (KWS + Speaker Verification)
-        maven { url = uri("https://jitpack.io") }
     }
 }
 
