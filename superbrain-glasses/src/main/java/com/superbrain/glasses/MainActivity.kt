@@ -5,6 +5,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -231,6 +232,8 @@ class MainActivity : ComponentActivity() {
                 addSystemMessage("Camera: permission denied. Grant via ADB: pm grant com.superbrain.glasses android.permission.CAMERA")
                 return
             }
+            // Wake screen + bring to foreground so camera isn't blocked as "background"
+            wakeScreen()
             addSystemMessage("Capturing photo...")
             cameraCapture.capture { base64 ->
                 scope.launch(Dispatchers.Main) {
@@ -320,6 +323,25 @@ class MainActivity : ComponentActivity() {
         }
         Log.i(TAG, status)
         addSystemMessage(status.trim())
+    }
+
+    @Suppress("DEPRECATION")
+    private fun wakeScreen() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isInteractive) {
+            val wl = pm.newWakeLock(
+                PowerManager.FULL_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+                "superbrain:camera"
+            )
+            wl.acquire(3000)
+        }
+        // Also turn screen on via window flags
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+        )
     }
 
     private fun addSystemMessage(text: String) {
