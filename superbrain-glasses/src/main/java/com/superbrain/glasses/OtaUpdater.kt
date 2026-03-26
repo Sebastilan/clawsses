@@ -132,10 +132,10 @@ class OtaUpdater(private val context: Context, private val scope: CoroutineScope
             }
 
             // Create status receiver intent
-            val intent = Intent(context, MainActivity::class.java).apply {
+            val intent = Intent(context, SuperBrainService::class.java).apply {
                 action = "com.superbrain.glasses.INSTALL_STATUS"
             }
-            val pendingIntent = PendingIntent.getActivity(
+            val pendingIntent = PendingIntent.getService(
                 context, sessionId, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
             )
