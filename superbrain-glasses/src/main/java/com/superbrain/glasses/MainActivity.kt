@@ -223,25 +223,37 @@ class MainActivity : ComponentActivity() {
     }
 
     fun handlePhoto() {
-        addSystemMessage("Capturing photo...")
-        cameraCapture.capture { base64 ->
-            scope.launch(Dispatchers.Main) {
-                if (base64 != null) {
-                    addSystemMessage("Photo captured, sending to AI...")
-                    val attachments = listOf(
-                        mapOf(
-                            "mimeType" to "image/jpeg",
-                            "content" to base64
+        try {
+            // Check permission first
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+                Log.e(TAG, "Camera permission not granted")
+                addSystemMessage("Camera: permission denied. Grant via ADB: pm grant com.superbrain.glasses android.permission.CAMERA")
+                return
+            }
+            addSystemMessage("Capturing photo...")
+            cameraCapture.capture { base64 ->
+                scope.launch(Dispatchers.Main) {
+                    if (base64 != null) {
+                        addSystemMessage("Photo captured, sending to AI...")
+                        val attachments = listOf(
+                            mapOf(
+                                "mimeType" to "image/jpeg",
+                                "content" to base64
+                            )
                         )
-                    )
-                    hudState.update { state ->
-                        state.copy(messages = state.messages + HudMessage("user", "[Photo sent]"))
+                        hudState.update { state ->
+                            state.copy(messages = state.messages + HudMessage("user", "[Photo sent]"))
+                        }
+                        wsClient.sendChat("Describe what you see in this image.", attachments)
+                    } else {
+                        addSystemMessage("Photo capture failed")
                     }
-                    wsClient.sendChat("Describe what you see in this image.", attachments)
-                } else {
-                    addSystemMessage("Photo capture failed")
                 }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Photo error: ${e.message}", e)
+            addSystemMessage("Photo error: ${e.message}")
         }
     }
 

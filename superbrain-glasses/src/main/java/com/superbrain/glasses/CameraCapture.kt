@@ -83,7 +83,7 @@ class CameraCapture(private val context: Context) {
             }
         }, handler)
 
-        try {
+        try @Suppress("MissingPermission") {
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     try {
@@ -147,6 +147,11 @@ class CameraCapture(private val context: Context) {
             }, handler)
         } catch (e: SecurityException) {
             Log.e(TAG, "Camera permission denied", e)
+            isCapturing = false
+            cleanupThread()
+            onResult(null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Camera error: ${e.message}", e)
             isCapturing = false
             cleanupThread()
             onResult(null)

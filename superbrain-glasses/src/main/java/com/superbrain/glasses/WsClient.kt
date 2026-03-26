@@ -34,6 +34,7 @@ class WsClient(private val scope: CoroutineScope) {
     private val gson = Gson()
     private val requestId = AtomicInteger(0)
     private var webSocket: WebSocket? = null
+    private var activeWs: WebSocket? = null  // Track which WS instance is "current"
     private var authenticated = false
     private var reconnectJob: Job? = null
     private var shouldReconnect = false
@@ -82,7 +83,15 @@ class WsClient(private val scope: CoroutineScope) {
     }
 
     private fun doConnect() {
-        webSocket?.cancel()
+        // Cancel pending reconnect — we're connecting now
+        reconnectJob?.cancel()
+        reconnectJob = null
+
+        // Close old socket quietly (don't cancel — cancel triggers onFailure)
+        val old = webSocket
+        webSocket = null
+        activeWs = null
+        old?.close(1000, "reconnecting")
 
         val url = "ws://$host:$port"
         Log.i(TAG, "Connecting to $url")
@@ -93,26 +102,38 @@ class WsClient(private val scope: CoroutineScope) {
             .header("Origin", "http://$host")
             .build()
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+        val newWs = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 Log.i(TAG, "WebSocket opened")
+                activeWs = ws
                 // Wait for connect.challenge event from server
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
+                if (ws !== activeWs) return  // Ignore stale callbacks
                 handleMessage(text)
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                if (ws !== activeWs) {
+                    Log.d(TAG, "Ignoring stale failure: ${t.message}")
+                    return
+                }
                 Log.e(TAG, "WebSocket failure: ${t.message}")
                 onDisconnected("Connection failed: ${t.message}")
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                if (ws !== activeWs) {
+                    Log.d(TAG, "Ignoring stale close: $code $reason")
+                    return
+                }
                 Log.i(TAG, "WebSocket closed: $code $reason")
                 onDisconnected("Closed: $reason")
             }
         })
+        webSocket = newWs
+        activeWs = newWs
     }
 
     fun disconnect() {
@@ -120,6 +141,7 @@ class WsClient(private val scope: CoroutineScope) {
         reconnectJob?.cancel()
         reconnectJob = null
         authenticated = false
+        activeWs = null
         webSocket?.close(1000, "User disconnect")
         webSocket = null
         _connected.value = false
@@ -217,6 +239,9 @@ class WsClient(private val scope: CoroutineScope) {
 
         if (id.startsWith("connect-")) {
             if (ok) {
+                // Cancel any pending reconnect — we're connected
+                reconnectJob?.cancel()
+                reconnectJob = null
                 authenticated = true
                 _connected.value = true
                 _statusMessages.tryEmit("Connected & authenticated")
