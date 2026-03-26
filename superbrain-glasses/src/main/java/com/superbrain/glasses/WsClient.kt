@@ -66,6 +66,12 @@ class WsClient(private val scope: CoroutineScope) {
     private val _wifiEvents = MutableSharedFlow<WifiEvent>(extraBufferCapacity = 4)
     val wifiEvents = _wifiEvents.asSharedFlow()
 
+    // ASR events from server
+    data class AsrEvent(val text: String, val isFinal: Boolean)
+
+    private val _asrEvents = MutableSharedFlow<AsrEvent>(extraBufferCapacity = 64)
+    val asrEvents = _asrEvents.asSharedFlow()
+
     // Pending messages queue for offline buffering
     private data class PendingMessage(val text: String, val attachments: List<Map<String, String>>?)
     private val pendingMessages = mutableListOf<PendingMessage>()
@@ -182,6 +188,50 @@ class WsClient(private val scope: CoroutineScope) {
         send(gson.toJson(req))
         Log.i(TAG, "Sent chat.send: ${text.take(50)}")
     }
+
+    fun sendAudioStart() {
+        if (!authenticated) {
+            _statusMessages.tryEmit("Not connected — can't start audio")
+            return
+        }
+        val req = mapOf(
+            "type" to "req",
+            "id" to "audio-start",
+            "method" to "audio.start"
+        )
+        send(gson.toJson(req))
+        Log.i(TAG, "Sent audio.start")
+    }
+
+    fun sendAudioStop() {
+        if (!authenticated) return
+        val req = mapOf(
+            "type" to "req",
+            "id" to "audio-stop",
+            "method" to "audio.stop"
+        )
+        send(gson.toJson(req))
+        Log.i(TAG, "Sent audio.stop")
+    }
+
+    private val audioSeq = AtomicInteger(0)
+
+    fun sendAudioChunk(base64: String, seq: Int) {
+        if (!authenticated) return
+        val req = mapOf(
+            "type" to "req",
+            "id" to "audio-${seq}",
+            "method" to "audio.stream",
+            "params" to mapOf("data" to base64, "seq" to seq)
+        )
+        send(gson.toJson(req))
+        if (seq % 10 == 0) {
+            Log.d(TAG, "Sent audio chunk seq=$seq, ${base64.length} chars")
+        }
+    }
+
+    fun resetAudioSeq() { audioSeq.set(0) }
+    fun nextAudioSeq(): Int = audioSeq.incrementAndGet()
 
     private fun handleMessage(raw: String) {
         try {

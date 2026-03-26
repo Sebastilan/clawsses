@@ -25,7 +25,7 @@ class AudioCapture(private val context: Context) {
         private const val SAMPLE_RATE = 16000
         private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        private const val CHUNK_DURATION_MS = 500  // Send audio every 500ms
+        private const val CHUNK_DURATION_MS = 100  // 100ms chunks = 3200 bytes @ 16kHz/16bit
     }
 
     private val _isRecording = MutableStateFlow(false)
