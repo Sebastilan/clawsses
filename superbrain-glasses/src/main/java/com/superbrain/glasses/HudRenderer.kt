@@ -32,7 +32,9 @@ data class HudState(
     val isListening: Boolean = false,
     val isStreaming: Boolean = false,
     val statusText: String = "SuperBrain",
-    val streamingText: String = ""
+    val streamingText: String = "",
+    val asrText: String = "",
+    val asrIsFinal: Boolean = false
 )
 
 data class HudMessage(
@@ -108,6 +110,15 @@ fun HudScreen(hudState: StateFlow<HudState>) {
             itemsIndexed(state.messages, key = { idx, _ -> idx }) { _, msg ->
                 ChatBubble(msg)
             }
+        }
+
+        // ── ASR Subtitle ──
+        if (state.isListening || state.asrText.isNotBlank()) {
+            AsrSubtitle(
+                text = state.asrText,
+                isFinal = state.asrIsFinal,
+                isListening = state.isListening
+            )
         }
 
         // ── Bottom Divider ──
@@ -237,6 +248,34 @@ private fun BottomBar(isListening: Boolean, isStreaming: Boolean) {
             text = streamIcon,
             style = TextStyle(fontFamily = JetBrainsMono, fontSize = 10.sp, color = streamColor)
         )
+    }
+}
+
+@Composable
+private fun AsrSubtitle(text: String, isFinal: Boolean, isListening: Boolean) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(HudColors.background)
+            .padding(horizontal = 6.dp, vertical = 4.dp)
+    ) {
+        if (text.isBlank() && isListening) {
+            // Pulsing "Listening..." indicator
+            PulsingText("\uD83C\uDF99 Listening...", HudColors.yellow, 11.sp)
+        } else if (text.isNotBlank()) {
+            val displayText = if (!isFinal) "$text\u2588" else text  // Block cursor for interim
+            val textColor = if (isFinal) HudColors.yellow else HudColors.yellow.copy(alpha = 0.8f)
+            Text(
+                text = displayText,
+                style = TextStyle(
+                    fontFamily = JetBrainsMono,
+                    fontSize = 12.sp,
+                    color = textColor,
+                    lineHeight = 16.sp
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 

@@ -288,6 +288,14 @@ class WsClient(private val scope: CoroutineScope) {
                     _wifiEvents.tryEmit(WifiEvent(ssid, password))
                 }
             }
+            "asr" -> {
+                val text = payload?.get("text")?.asString ?: ""
+                val isFinal = payload?.get("is_final")?.asBoolean ?: false
+                if (text.isNotBlank()) {
+                    Log.i(TAG, "ASR event: \"$text\" final=$isFinal")
+                    _asrEvents.tryEmit(AsrEvent(text, isFinal))
+                }
+            }
             "heartbeat" -> { /* ignore */ }
         }
     }
@@ -310,6 +318,13 @@ class WsClient(private val scope: CoroutineScope) {
                 val error = json.getAsJsonObject("error")?.get("message")?.asString ?: "Auth failed"
                 _statusMessages.tryEmit("Auth failed: $error")
                 Log.e(TAG, "Auth failed: $error")
+            }
+        } else if (id.startsWith("audio-")) {
+            if (ok) {
+                Log.d(TAG, "Audio ack: $id")
+            } else {
+                val error = json.getAsJsonObject("error")?.get("message")?.asString ?: "Audio error"
+                Log.e(TAG, "Audio error: $id: $error")
             }
         } else if (id.startsWith("chat-")) {
             if (ok) {

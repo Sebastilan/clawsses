@@ -170,15 +170,19 @@ class SuperBrainService : Service() {
     }
 
     fun handleListenStart() {
-        _hudState.update { it.copy(isListening = true) }
+        _hudState.update { it.copy(isListening = true, asrText = "", asrIsFinal = false) }
+        wsClient.resetAudioSeq()
+        wsClient.sendAudioStart()
         audioCapture.start(scope) { base64Pcm ->
-            Log.d(TAG, "Audio chunk: ${base64Pcm.length} chars")
+            val seq = wsClient.nextAudioSeq()
+            wsClient.sendAudioChunk(base64Pcm, seq)
         }
         addSystemMessage("Listening...")
     }
 
     fun handleListenStop() {
         audioCapture.stop()
+        wsClient.sendAudioStop()
         _hudState.update { it.copy(isListening = false) }
         addSystemMessage("Stopped listening")
     }
@@ -325,6 +329,22 @@ class SuperBrainService : Service() {
                 Log.i(TAG, "OTA event received: v${event.version}")
                 addSystemMessage("OTA update v${event.version}")
                 handleOta(event.url)
+            }
+        }
+
+        // ASR events
+        scope.launch {
+            wsClient.asrEvents.collect { event ->
+                _hudState.update { state ->
+                    if (event.isFinal) {
+                        // Final ASR result → add as user message, clear subtitle
+                        val messages = state.messages + HudMessage("user", event.text)
+                        state.copy(messages = messages, asrText = "", asrIsFinal = true)
+                    } else {
+                        // Interim result → update subtitle
+                        state.copy(asrText = event.text, asrIsFinal = false)
+                    }
+                }
             }
         }
 
