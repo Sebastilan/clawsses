@@ -72,6 +72,12 @@ class WsClient(private val scope: CoroutineScope) {
     private val _asrEvents = MutableSharedFlow<AsrEvent>(extraBufferCapacity = 64)
     val asrEvents = _asrEvents.asSharedFlow()
 
+    // Command events from server (e.g. action="sleep")
+    data class CommandEvent(val action: String)
+
+    private val _commandEvents = MutableSharedFlow<CommandEvent>(extraBufferCapacity = 4)
+    val commandEvents = _commandEvents.asSharedFlow()
+
     // Pending messages queue for offline buffering
     private data class PendingMessage(val text: String, val attachments: List<Map<String, String>>?)
     private val pendingMessages = mutableListOf<PendingMessage>()
@@ -294,6 +300,13 @@ class WsClient(private val scope: CoroutineScope) {
                 if (text.isNotBlank()) {
                     Log.i(TAG, "ASR event: \"$text\" final=$isFinal")
                     _asrEvents.tryEmit(AsrEvent(text, isFinal))
+                }
+            }
+            "command" -> {
+                val action = payload?.get("action")?.asString ?: ""
+                if (action.isNotBlank()) {
+                    Log.i(TAG, "Command event: action=$action")
+                    _commandEvents.tryEmit(CommandEvent(action))
                 }
             }
             "heartbeat" -> { /* ignore */ }
