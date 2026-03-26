@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
         private set
     lateinit var ttsPlayer: TtsPlayer
         private set
+    private lateinit var adbController: AdbController
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +57,9 @@ class MainActivity : ComponentActivity() {
         audioCapture = AudioCapture(this)
         ttsPlayer = TtsPlayer(this)
 
+        // Register ADB broadcast receiver dynamically
+        registerAdbReceiver()
+
         // Collect WebSocket events
         collectWsEvents()
 
@@ -69,6 +73,27 @@ class MainActivity : ComponentActivity() {
 
         Log.i(TAG, "SuperBrain Glasses started. Waiting for ADB commands.")
         addSystemMessage("Ready. Use ADB broadcast to configure & connect.")
+    }
+
+    private fun registerAdbReceiver() {
+        adbController = AdbController()
+        val filter = IntentFilter().apply {
+            addAction("com.superbrain.glasses.CONFIG")
+            addAction("com.superbrain.glasses.CONNECT")
+            addAction("com.superbrain.glasses.DISCONNECT")
+            addAction("com.superbrain.glasses.SEND")
+            addAction("com.superbrain.glasses.PHOTO")
+            addAction("com.superbrain.glasses.LISTEN_START")
+            addAction("com.superbrain.glasses.LISTEN_STOP")
+            addAction("com.superbrain.glasses.DISPLAY")
+            addAction("com.superbrain.glasses.STATUS")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(adbController, filter, RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(adbController, filter)
+        }
+        Log.i(TAG, "ADB receiver registered")
     }
 
     private fun collectWsEvents() {
@@ -257,6 +282,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        try { unregisterReceiver(adbController) } catch (_: Exception) {}
         wsClient.disconnect()
         audioCapture.cleanup()
         cameraCapture.cleanup()
