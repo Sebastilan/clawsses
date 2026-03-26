@@ -61,4 +61,7 @@ dependencies {
 
     // JSON
     implementation("com.google.code.gson:gson:2.10.1")
+
+    // Sherpa-onnx (KWS + Speaker Verification)
+    implementation("com.github.k2-fsa:sherpa-onnx:v1.10.35")
 }
