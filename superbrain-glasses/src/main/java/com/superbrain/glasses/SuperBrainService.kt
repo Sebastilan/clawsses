@@ -395,8 +395,14 @@ class SuperBrainService : Service() {
             modelsReady = ok
             withContext(Dispatchers.Main) {
                 if (ok) {
-                    addSystemMessage("Models loaded. Use WAKE_ENABLE to activate.")
                     _hudState.update { it.copy(modelsLoaded = true) }
+                    // Auto-enable if WS already connected
+                    if (wsClient.connected.value && !wakeWordEnabled) {
+                        Log.i(TAG, "Wake word engine started automatically")
+                        handleWakeEnable()
+                    } else {
+                        addSystemMessage("Models loaded.")
+                    }
                 } else {
                     addSystemMessage("Model loading failed")
                 }
@@ -493,6 +499,11 @@ class SuperBrainService : Service() {
             wsClient.connected.collect { connected ->
                 _hudState.update { it.copy(isConnected = connected) }
                 updateNotification(if (connected) "Connected" else "Disconnected")
+                // Auto-enable wake word when WS connects and models are ready
+                if (connected && modelsReady && !wakeWordEnabled) {
+                    Log.i(TAG, "Connected + models ready → auto-enabling wake word")
+                    handleWakeEnable()
+                }
             }
         }
 

@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -40,13 +41,16 @@ data class HudState(
     val modelsLoaded: Boolean = false,
     val enrolling: Boolean = false,
     val enrollProgress: Int = 0,
-    val enrollNeeded: Int = 3
+    val enrollNeeded: Int = 3,
+    // Observer (旁听) mode
+    val observerMode: Boolean = false
 )
 
 data class HudMessage(
     val role: String,  // "user", "assistant", "system"
     val content: String,
-    val isStreaming: Boolean = false
+    val isStreaming: Boolean = false,
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 /**
@@ -66,120 +70,97 @@ val JetBrainsMono = FontFamily(Font(R.font.jetbrains_mono))
 
 /**
  * Main HUD composable for the 480x640 green monochrome display.
+ * Minimal design: black screen with ephemeral messages (5s TTL) and a bottom status line.
  */
 @Composable
 fun HudScreen(hudState: StateFlow<HudState>) {
     val state by hudState.collectAsState()
     val listState = rememberLazyListState()
 
-    // Auto-scroll to bottom when new messages arrive
-    val messageCount = state.messages.size
-    val isStreaming = state.isStreaming
-    LaunchedEffect(messageCount, state.streamingText) {
-        if (state.messages.isNotEmpty()) {
-            listState.animateScrollToItem(state.messages.lastIndex)
+    // Tick every second to expire old messages
+    val currentTime by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(1000)
+            value = System.currentTimeMillis()
         }
     }
 
-    Column(
+    // Streaming messages always visible; completed messages live 5s
+    val visibleMessages = state.messages.filter {
+        it.isStreaming || (currentTime - it.timestamp < 5000L)
+    }
+
+    LaunchedEffect(visibleMessages.size, state.streamingText) {
+        if (visibleMessages.isNotEmpty()) {
+            listState.animateScrollToItem(visibleMessages.lastIndex)
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(HudColors.background)
-            .padding(4.dp)
     ) {
-        // ── Status Bar ──
-        StatusBar(
-            isConnected = state.isConnected,
-            isListening = state.isListening,
-            statusText = state.statusText
-        )
-
-        Spacer(modifier = Modifier.height(2.dp))
-
-        // ── Divider ──
-        Box(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(HudColors.dimGreen)
-        )
-
-        // ── Chat Messages ──
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 2.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+                .fillMaxSize()
+                .padding(4.dp)
         ) {
-            itemsIndexed(state.messages, key = { idx, _ -> idx }) { _, msg ->
-                ChatBubble(msg)
+            // ── Chat Messages (only when present) ──
+            if (visibleMessages.isNotEmpty()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 2.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    itemsIndexed(visibleMessages, key = { idx, _ -> idx }) { _, msg ->
+                        ChatBubble(msg)
+                    }
+                }
+            } else {
+                Spacer(modifier = Modifier.weight(1f))
             }
+
+            // ── ASR Subtitle ──
+            if (state.isListening || state.asrText.isNotBlank()) {
+                AsrSubtitle(
+                    text = state.asrText,
+                    isFinal = state.asrIsFinal,
+                    isListening = state.isListening
+                )
+            }
+
+            // ── Enrollment overlay ──
+            if (state.enrolling) {
+                EnrollmentBar(progress = state.enrollProgress, needed = state.enrollNeeded)
+            }
+
+            // ── Minimal bottom status line ──
+            MinimalStatusLine(state)
         }
-
-        // ── ASR Subtitle ──
-        if (state.isListening || state.asrText.isNotBlank()) {
-            AsrSubtitle(
-                text = state.asrText,
-                isFinal = state.asrIsFinal,
-                isListening = state.isListening
-            )
-        }
-
-        // ── Bottom Divider ──
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(HudColors.dimGreen)
-        )
-
-        Spacer(modifier = Modifier.height(2.dp))
-
-        // ── Enrollment overlay ──
-        if (state.enrolling) {
-            EnrollmentBar(progress = state.enrollProgress, needed = state.enrollNeeded)
-        }
-
-        // ── Bottom Status Bar ──
-        BottomBar(
-            isListening = state.isListening,
-            isStreaming = state.isStreaming,
-            wakeWordActive = state.wakeWordActive
-        )
     }
 }
 
 @Composable
-private fun StatusBar(isConnected: Boolean, isListening: Boolean, statusText: String) {
-    Row(
+private fun MinimalStatusLine(state: HudState) {
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = statusText,
-            style = TextStyle(
-                fontFamily = JetBrainsMono,
-                fontSize = 11.sp,
-                color = HudColors.green
-            ),
-            modifier = Modifier.weight(1f)
-        )
-
-        // Connection indicator
-        val dotColor = if (isConnected) HudColors.green else HudColors.error
-        val dotText = if (isConnected) "\u25CF" else "\u25CB"  // ● or ○
-        Text(
-            text = dotText,
-            style = TextStyle(fontSize = 12.sp, color = dotColor)
-        )
-
-        if (isListening) {
-            Spacer(modifier = Modifier.width(4.dp))
-            PulsingText("\uD83C\uDF99", HudColors.yellow, 11.sp)  // 🎙
+        when {
+            state.observerMode ->
+                PulsingText("旁听中 | 说退出旁听", HudColors.dimGreen, 10.sp)
+            state.wakeWordActive && !state.isListening ->
+                Text(
+                    text = "说小C唤醒",
+                    style = TextStyle(fontFamily = JetBrainsMono, fontSize = 10.sp, color = HudColors.dimGreen)
+                )
+            // Listening/streaming: ASR subtitle handles status display
         }
     }
 }
@@ -230,43 +211,6 @@ private fun ChatBubble(msg: HudMessage) {
             ),
             textAlign = align,
             modifier = Modifier.fillMaxWidth()
-        )
-    }
-}
-
-@Composable
-private fun BottomBar(isListening: Boolean, isStreaming: Boolean, wakeWordActive: Boolean) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (wakeWordActive && isListening) {
-            // Wake word triggered, now in continuous listen mode
-            PulsingText("\u5C0FC\u5728\u7EBF | \u8BF4'\u62DC\u62DC'\u5173\u95ED", HudColors.yellow, 10.sp)
-        } else if (wakeWordActive && !isListening) {
-            // Wake word mode: waiting for trigger
-            PulsingText("say \u5C0FC", HudColors.dimGreen, 10.sp)
-        } else {
-            val micColor = if (isListening) HudColors.yellow else HudColors.dimGreen
-            Text(
-                text = "\uD83C\uDF99 Listen",
-                style = TextStyle(fontFamily = JetBrainsMono, fontSize = 10.sp, color = micColor)
-            )
-        }
-
-        Text(
-            text = "\uD83D\uDCF7 Photo",
-            style = TextStyle(fontFamily = JetBrainsMono, fontSize = 10.sp, color = HudColors.dimGreen)
-        )
-
-        val streamColor = if (isStreaming) HudColors.cyan else HudColors.dimGreen
-        val streamIcon = if (isStreaming) "\u26A1" else "\u2022"  // ⚡ or •
-        Text(
-            text = streamIcon,
-            style = TextStyle(fontFamily = JetBrainsMono, fontSize = 10.sp, color = streamColor)
         )
     }
 }
