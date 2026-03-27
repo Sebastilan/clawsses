@@ -62,6 +62,11 @@ dependencies {
     // JSON
     implementation("com.google.code.gson:gson:2.10.1")
 
-    // Sherpa-onnx (KWS + Speaker Verification) â€” local AAR from GitHub Releases
+    // CameraX
+    implementation("androidx.camera:camera-core:1.3.1")
+    implementation("androidx.camera:camera-camera2:1.3.1")
+    implementation("androidx.camera:camera-lifecycle:1.3.1")
+
+    // Sherpa-onnx (KWS + Speaker Verification) â€?local AAR from GitHub Releases
     implementation(files("libs/sherpa-onnx-1.12.34.aar"))
 }
