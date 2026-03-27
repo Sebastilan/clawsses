@@ -58,6 +58,14 @@
 
         <!-- AdbController is registered dynamically in SuperBrainService -->
 
+        <activity
+            android:name=".WebViewActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:keepScreenOn="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
     </application>
 
 </manifest>
