@@ -165,7 +165,7 @@ class CameraCapture(private val context: Context) {
                 val sampleSize = maxOf(options.outWidth / MAX_WIDTH, options.outHeight / MAX_HEIGHT).coerceAtLeast(1)
                 val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
                 var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions) ?: return null
-                bitmap = rotateBitmap(bitmap, 90f)  // Sensor orientation 270 → rotate 90 CW
+                bitmap = rotateBitmap(bitmap, 270f)  // Sensor orientation 270
                 val scale = minOf(MAX_WIDTH.toFloat() / bitmap.width, MAX_HEIGHT.toFloat() / bitmap.height).coerceAtMost(1f)
                 val scaled = if (scale < 1f) {
                     Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
@@ -177,7 +177,7 @@ class CameraCapture(private val context: Context) {
                 scaled.recycle()
             } else {
                 var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return null
-                bitmap = rotateBitmap(bitmap, 90f)  // Sensor orientation 270 → rotate 90 CW
+                bitmap = rotateBitmap(bitmap, 270f)  // Sensor orientation 270
                 val os = ByteArrayOutputStream()
                 bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, os)
                 finalBytes = os.toByteArray()
