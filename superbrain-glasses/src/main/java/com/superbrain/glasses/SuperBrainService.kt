@@ -561,10 +561,12 @@ class SuperBrainService : Service() {
                         Log.i(TAG, "Observer mode ON")
                         observerMode = true
                         addSystemMessage("旁听中...")
+                        handleListenStart()
                     }
                     "observer_stop" -> {
                         Log.i(TAG, "Observer mode OFF")
                         observerMode = false
+                        handleListenStop()
                         addSystemMessage("旁听结束")
                     }
                     "take_photo" -> {
