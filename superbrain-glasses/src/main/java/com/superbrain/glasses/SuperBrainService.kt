@@ -405,6 +405,7 @@ class SuperBrainService : Service() {
             addAction("com.superbrain.glasses.WAKE_DISABLE")
             addAction("com.superbrain.glasses.ENROLL_START")
             addAction("com.superbrain.glasses.ENROLL_CLEAR")
+            addAction("com.superbrain.glasses.BROWSER")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(adbController, filter, RECEIVER_EXPORTED)
