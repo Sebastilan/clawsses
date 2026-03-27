@@ -63,6 +63,9 @@ class SuperBrainService : Service() {
     private var wakeWordEnabled = false
     private var modelsReady = false
 
+    // Pending photo for 小C (captured on wake word, sent with ASR final)
+    private var pendingPhoto: String? = null
+
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -310,15 +313,29 @@ class SuperBrainService : Service() {
             return
         }
 
-        Log.i(TAG, "Speaker verified! Starting ASR...")
+        Log.i(TAG, "Speaker verified! Starting ASR + photo...")
         addSystemMessage("Listening...")
 
         // Stop wake word detection, start ASR
         wakeWordEngine.stop()
-        handleListenStart()
 
-        // Auto-stop after silence (delegated to VPS ASR silence detection)
-        // When ASR sends is_final=true, we'll stop listening
+        // Capture photo simultaneously for 小C
+        pendingPhoto = null
+        try {
+            wakeScreen()
+            cameraCapture.capture { base64 ->
+                if (base64 != null) {
+                    pendingPhoto = base64
+                    Log.i(TAG, "Photo captured for 小C (${base64.length} chars)")
+                } else {
+                    Log.w(TAG, "Photo capture failed — will send text only")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Photo capture error: ${e.message}")
+        }
+
+        handleListenStart()
     }
 
     private fun onEnrollSample(audioSamples: FloatArray, restoreWakeWord: Boolean) {
@@ -496,7 +513,17 @@ class SuperBrainService : Service() {
                         state.copy(asrText = event.text, asrIsFinal = false)
                     }
                 }
-                // If final ASR result and wake-word triggered, stop listening & re-enable wake word
+                // On final ASR result, send chat.send to VPS with text + pending photo
+                if (event.isFinal && event.text.isNotBlank()) {
+                    val photo = pendingPhoto
+                    pendingPhoto = null
+                    val attachments = if (photo != null) {
+                        listOf(mapOf("mimeType" to "image/jpeg", "content" to photo))
+                    } else null
+                    wsClient.sendChat(event.text, attachments)
+                    Log.i(TAG, "Sent chat.send: text=${event.text.take(50)}, hasPhoto=${photo != null}")
+                }
+                // If wake-word mode, continue listening for next utterance
                 if (event.isFinal && wakeWordEnabled) {
                     onAsrComplete()
                 }
