@@ -560,25 +560,24 @@ class SuperBrainService : Service() {
                         Log.i(TAG, "Sleep command — stopping listen, restarting wake word")
                         observerMode = false
                         handleListenStop()
-                        _hudState.update { it.copy(wakeWordActive = wakeWordEnabled) }
+                        _hudState.update { it.copy(observerMode = false, wakeWordActive = wakeWordEnabled) }
                         if (wakeWordEnabled && !wakeWordEngine.isRunning.value) {
                             wakeWordEngine.start(scope) { keyword, audioSamples ->
                                 onWakeWordDetected(keyword, audioSamples)
                             }
                         }
-                        addSystemMessage("Sleeping... say '小C' to wake")
                     }
                     "observer_start" -> {
                         Log.i(TAG, "Observer mode ON")
                         observerMode = true
-                        addSystemMessage("旁听中...")
+                        _hudState.update { it.copy(observerMode = true) }
                         handleListenStart()
                     }
                     "observer_stop" -> {
                         Log.i(TAG, "Observer mode OFF")
                         observerMode = false
+                        _hudState.update { it.copy(observerMode = false) }
                         handleListenStop()
-                        addSystemMessage("旁听结束")
                     }
                     "take_photo" -> {
                         Log.i(TAG, "Photo requested by server")
