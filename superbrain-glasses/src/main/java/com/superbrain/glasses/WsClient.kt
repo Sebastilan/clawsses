@@ -239,6 +239,19 @@ class WsClient(private val scope: CoroutineScope) {
     fun resetAudioSeq() { audioSeq.set(0) }
     fun nextAudioSeq(): Int = audioSeq.incrementAndGet()
 
+    fun sendPhotoResult(base64: String?) {
+        if (!authenticated) return
+        val params = if (base64 != null) mapOf("data" to base64) else emptyMap<String, String>()
+        val req = mapOf(
+            "type" to "req",
+            "id" to "photo-result",
+            "method" to "photo.result",
+            "params" to params
+        )
+        send(gson.toJson(req))
+        Log.i(TAG, "Sent photo.result: ${base64?.length ?: 0} chars")
+    }
+
     private fun handleMessage(raw: String) {
         try {
             val json = JsonParser.parseString(raw).asJsonObject

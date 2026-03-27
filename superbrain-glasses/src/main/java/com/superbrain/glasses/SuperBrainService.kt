@@ -516,8 +516,8 @@ class SuperBrainService : Service() {
                         state.copy(asrText = event.text, asrIsFinal = false)
                     }
                 }
-                // On final ASR result, send chat.send to VPS with text + pending photo
-                if (event.isFinal && event.text.isNotBlank()) {
+                // On final ASR result, send chat.send (skip in observer mode — VPS buffers)
+                if (event.isFinal && event.text.isNotBlank() && !observerMode) {
                     val photo = pendingPhoto
                     pendingPhoto = null
                     val attachments = if (photo != null) {
@@ -541,19 +541,47 @@ class SuperBrainService : Service() {
             }
         }
 
-        // Command events (e.g. sleep → stop listening, restart wake word)
+        // Command events
         scope.launch {
             wsClient.commandEvents.collect { event ->
-                if (event.action == "sleep") {
-                    Log.i(TAG, "Sleep command received — stopping listen, restarting wake word")
-                    handleListenStop()
-                    _hudState.update { it.copy(wakeWordActive = wakeWordEnabled) }
-                    if (wakeWordEnabled && !wakeWordEngine.isRunning.value) {
-                        wakeWordEngine.start(scope) { keyword, audioSamples ->
-                            onWakeWordDetected(keyword, audioSamples)
+                when (event.action) {
+                    "sleep" -> {
+                        Log.i(TAG, "Sleep command — stopping listen, restarting wake word")
+                        observerMode = false
+                        handleListenStop()
+                        _hudState.update { it.copy(wakeWordActive = wakeWordEnabled) }
+                        if (wakeWordEnabled && !wakeWordEngine.isRunning.value) {
+                            wakeWordEngine.start(scope) { keyword, audioSamples ->
+                                onWakeWordDetected(keyword, audioSamples)
+                            }
+                        }
+                        addSystemMessage("Sleeping... say '小C' to wake")
+                    }
+                    "observer_start" -> {
+                        Log.i(TAG, "Observer mode ON")
+                        observerMode = true
+                        addSystemMessage("旁听中...")
+                    }
+                    "observer_stop" -> {
+                        Log.i(TAG, "Observer mode OFF")
+                        observerMode = false
+                        addSystemMessage("旁听结束")
+                    }
+                    "take_photo" -> {
+                        Log.i(TAG, "Photo requested by server")
+                        try {
+                            wakeScreen()
+                            cameraCapture.capture { base64 ->
+                                scope.launch(Dispatchers.Main) {
+                                    wsClient.sendPhotoResult(base64)
+                                    Log.i(TAG, "Photo sent: ${base64?.length ?: 0} chars")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Take photo error: ${e.message}")
+                            wsClient.sendPhotoResult(null)
                         }
                     }
-                    addSystemMessage("Sleeping... say '小C' to wake")
                 }
             }
         }
