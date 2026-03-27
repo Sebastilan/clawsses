@@ -66,6 +66,9 @@ class SuperBrainService : Service() {
     // Pending photo for 小C (captured on wake word, sent with ASR final)
     private var pendingPhoto: String? = null
 
+    // Observer mode (旁听)
+    private var observerMode = false
+
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
