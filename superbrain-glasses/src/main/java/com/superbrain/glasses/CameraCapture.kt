@@ -88,6 +88,13 @@ class CameraCapture(private val context: Context) {
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     try {
+                        // Preview request for AE convergence
+                        val previewBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                        previewBuilder.addTarget(imageReader.surface)
+                        previewBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                        previewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+
+                        // Still capture request
                         val captureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                         captureBuilder.addTarget(imageReader.surface)
                         captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
@@ -98,17 +105,29 @@ class CameraCapture(private val context: Context) {
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(session: CameraCaptureSession) {
                                     try {
-                                        session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
-                                            override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
-                                                camera.close()
-                                            }
-                                            override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, failure: CaptureFailure) {
+                                        // Run preview for AE/AF convergence, then capture
+                                        session.setRepeatingRequest(previewBuilder.build(), null, handler)
+                                        handler?.postDelayed({
+                                            try {
+                                                session.stopRepeating()
+                                                session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
+                                                    override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
+                                                        camera.close()
+                                                    }
+                                                    override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, failure: CaptureFailure) {
+                                                        camera.close()
+                                                        isCapturing = false
+                                                        cleanupThread()
+                                                        onResult(null)
+                                                    }
+                                                }, handler)
+                                            } catch (e: Exception) {
                                                 camera.close()
                                                 isCapturing = false
                                                 cleanupThread()
                                                 onResult(null)
                                             }
-                                        }, handler)
+                                        }, 800)  // 800ms for AE convergence
                                     } catch (e: Exception) {
                                         camera.close()
                                         isCapturing = false
