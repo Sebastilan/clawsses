@@ -88,17 +88,24 @@ class CameraCapture(private val context: Context) {
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     try {
+                        // Get max AE compensation for brightness boost
+                        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                        val aeRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+                        val maxAeComp = aeRange?.upper ?: 0
+
                         // Preview request for AE convergence
                         val previewBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                         previewBuilder.addTarget(imageReader.surface)
                         previewBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         previewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                        previewBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, maxAeComp / 2)
 
                         // Still capture request
                         val captureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                         captureBuilder.addTarget(imageReader.surface)
                         captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                        captureBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, maxAeComp / 2)
 
                         camera.createCaptureSession(
                             listOf(imageReader.surface),
@@ -127,7 +134,7 @@ class CameraCapture(private val context: Context) {
                                                 cleanupThread()
                                                 onResult(null)
                                             }
-                                        }, 800)  // 800ms for AE convergence
+                                        }, 1500)  // 1.5s for AE convergence
                                     } catch (e: Exception) {
                                         camera.close()
                                         isCapturing = false
