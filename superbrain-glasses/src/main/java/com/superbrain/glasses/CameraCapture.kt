@@ -8,6 +8,7 @@ import android.hardware.camera2.*
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.graphics.Matrix
 import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
@@ -144,6 +145,14 @@ class CameraCapture(private val context: Context) {
         }
     }
 
+    private fun rotateBitmap(bitmap: Bitmap, degrees: Float): Bitmap {
+        if (degrees == 0f) return bitmap
+        val matrix = Matrix().apply { postRotate(degrees) }
+        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        if (rotated !== bitmap) bitmap.recycle()
+        return rotated
+    }
+
     private fun processCapture(jpegBytes: ByteArray): String? {
         return try {
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -155,7 +164,8 @@ class CameraCapture(private val context: Context) {
             if (needsResize) {
                 val sampleSize = maxOf(options.outWidth / MAX_WIDTH, options.outHeight / MAX_HEIGHT).coerceAtLeast(1)
                 val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions) ?: return null
+                var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions) ?: return null
+                bitmap = rotateBitmap(bitmap, 90f)  // Sensor orientation 270 → rotate 90 CW
                 val scale = minOf(MAX_WIDTH.toFloat() / bitmap.width, MAX_HEIGHT.toFloat() / bitmap.height).coerceAtMost(1f)
                 val scaled = if (scale < 1f) {
                     Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
@@ -166,7 +176,8 @@ class CameraCapture(private val context: Context) {
                 finalBytes = os.toByteArray()
                 scaled.recycle()
             } else {
-                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return null
+                var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return null
+                bitmap = rotateBitmap(bitmap, 90f)  // Sensor orientation 270 → rotate 90 CW
                 val os = ByteArrayOutputStream()
                 bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, os)
                 finalBytes = os.toByteArray()
