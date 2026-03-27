@@ -22,11 +22,12 @@ class WebViewActivity : Activity() {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                loadWithOverviewMode = true
-                useWideViewPort = true
+                loadWithOverviewMode = false
+                useWideViewPort = false
                 builtInZoomControls = true
                 displayZoomControls = false
                 cacheMode = WebSettings.LOAD_DEFAULT
+                textZoom = 150
             }
             webViewClient = WebViewClient()
             webChromeClient = WebChromeClient()
