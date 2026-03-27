@@ -12,10 +12,6 @@ import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
 
-/**
- * Camera2-based photo capture. Adapted from clawsses glasses-app.
- * Returns base64 JPEG suitable for sending to VPS.
- */
 class CameraCapture(private val context: Context) {
 
     companion object {
@@ -29,22 +25,18 @@ class CameraCapture(private val context: Context) {
         private set
 
     private var cameraThread: HandlerThread? = null
-    private var cameraHandler: Handler? = null
 
     fun capture(onResult: (base64: String?) -> Unit) {
         if (isCapturing) return
         isCapturing = true
-        Log.d(TAG, "Starting photo capture")
 
         val thread = HandlerThread("camera-capture").also { it.start() }
         cameraThread = thread
         val handler = Handler(thread.looper)
-        cameraHandler = handler
 
         val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val cameraId = findBackCamera(cameraManager)
         if (cameraId == null) {
-            Log.e(TAG, "No camera found")
             isCapturing = false
             cleanupThread()
             onResult(null)
@@ -60,7 +52,6 @@ class CameraCapture(private val context: Context) {
 
         val width = captureSize?.width ?: MAX_WIDTH
         val height = captureSize?.height ?: MAX_HEIGHT
-        Log.d(TAG, "Capture size: ${width}x${height}")
 
         val imageReader = ImageReader.newInstance(width, height, ImageFormat.JPEG, 1)
         imageReader.setOnImageAvailableListener({ reader ->
@@ -88,53 +79,27 @@ class CameraCapture(private val context: Context) {
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     try {
-                        // Get max AE compensation for brightness boost
-                        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-                        val aeRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
-                        val maxAeComp = aeRange?.upper ?: 0
-
-                        // Preview request for AE convergence
-                        val previewBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                        previewBuilder.addTarget(imageReader.surface)
-                        previewBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                        previewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                        previewBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, maxAeComp / 2)
-
-                        // Still capture request
                         val captureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                         captureBuilder.addTarget(imageReader.surface)
                         captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                        captureBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, maxAeComp / 2)
 
                         camera.createCaptureSession(
                             listOf(imageReader.surface),
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(session: CameraCaptureSession) {
                                     try {
-                                        // Run preview for AE/AF convergence, then capture
-                                        session.setRepeatingRequest(previewBuilder.build(), null, handler)
-                                        handler?.postDelayed({
-                                            try {
-                                                session.stopRepeating()
-                                                session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
-                                                    override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
-                                                        camera.close()
-                                                    }
-                                                    override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, failure: CaptureFailure) {
-                                                        camera.close()
-                                                        isCapturing = false
-                                                        cleanupThread()
-                                                        onResult(null)
-                                                    }
-                                                }, handler)
-                                            } catch (e: Exception) {
+                                        session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
+                                            override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
+                                                camera.close()
+                                            }
+                                            override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, failure: CaptureFailure) {
                                                 camera.close()
                                                 isCapturing = false
                                                 cleanupThread()
                                                 onResult(null)
                                             }
-                                        }, 1500)  // 1.5s for AE convergence
+                                        }, handler)
                                     } catch (e: Exception) {
                                         camera.close()
                                         isCapturing = false
@@ -172,13 +137,7 @@ class CameraCapture(private val context: Context) {
                     onResult(null)
                 }
             }, handler)
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Camera permission denied", e)
-            isCapturing = false
-            cleanupThread()
-            onResult(null)
         } catch (e: Exception) {
-            Log.e(TAG, "Camera error: ${e.message}", e)
             isCapturing = false
             cleanupThread()
             onResult(null)
@@ -214,31 +173,24 @@ class CameraCapture(private val context: Context) {
                 bitmap.recycle()
             }
 
-            val base64 = Base64.encodeToString(finalBytes, Base64.NO_WRAP)
-            Log.d(TAG, "Photo: ${finalBytes.size} bytes, base64=${base64.length} chars")
-            base64
+            Base64.encodeToString(finalBytes, Base64.NO_WRAP)
         } catch (e: Exception) {
             Log.e(TAG, "Error processing capture", e)
             null
         }
     }
 
-    fun cleanup() {
-        cleanupThread()
-    }
+    fun cleanup() { cleanupThread() }
 
     private fun cleanupThread() {
         cameraThread?.quitSafely()
         cameraThread = null
-        cameraHandler = null
     }
 
     private fun findBackCamera(cameraManager: CameraManager): String? {
         for (id in cameraManager.cameraIdList) {
-            val characteristics = cameraManager.getCameraCharacteristics(id)
-            if (characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK) {
-                return id
-            }
+            val ch = cameraManager.getCameraCharacteristics(id)
+            if (ch.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK) return id
         }
         return cameraManager.cameraIdList.firstOrNull()
     }
