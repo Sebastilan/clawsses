@@ -55,7 +55,7 @@ class AudioCapture(private val context: Context) {
 
         try {
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.CAMCORDER,  // wider pickup range for room audio
                 SAMPLE_RATE, CHANNEL, ENCODING,
                 bufferSize * 2
             )
