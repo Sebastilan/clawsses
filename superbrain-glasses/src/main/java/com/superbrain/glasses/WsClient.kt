@@ -73,7 +73,7 @@ class WsClient(private val scope: CoroutineScope) {
     val asrEvents = _asrEvents.asSharedFlow()
 
     // Command events from server (e.g. action="sleep")
-    data class CommandEvent(val action: String)
+    data class CommandEvent(val action: String, val payload: JsonObject? = null)
 
     private val _commandEvents = MutableSharedFlow<CommandEvent>(extraBufferCapacity = 4)
     val commandEvents = _commandEvents.asSharedFlow()
@@ -252,6 +252,23 @@ class WsClient(private val scope: CoroutineScope) {
         Log.i(TAG, "Sent photo.result: ${base64?.length ?: 0} chars")
     }
 
+    fun sendShellResult(requestId: String, cmd: String, output: String, exitCode: Int) {
+        if (!authenticated) return
+        val req = mapOf(
+            "type" to "req",
+            "id" to nextId(),
+            "method" to "shell.result",
+            "params" to mapOf(
+                "requestId" to requestId,
+                "cmd" to cmd,
+                "output" to output,
+                "exitCode" to exitCode
+            )
+        )
+        send(gson.toJson(req))
+        Log.i(TAG, "Sent shell.result: requestId=$requestId exitCode=$exitCode output=${output.take(100)}")
+    }
+
     private fun handleMessage(raw: String) {
         try {
             val json = JsonParser.parseString(raw).asJsonObject
@@ -319,7 +336,7 @@ class WsClient(private val scope: CoroutineScope) {
                 val action = payload?.get("action")?.asString ?: ""
                 if (action.isNotBlank()) {
                     Log.i(TAG, "Command event: action=$action")
-                    _commandEvents.tryEmit(CommandEvent(action))
+                    _commandEvents.tryEmit(CommandEvent(action, payload))
                 }
             }
             "heartbeat" -> { /* ignore */ }
