@@ -160,10 +160,8 @@ class WakeWordEngine(private val context: Context) {
                             ringPos++
                         }
 
-                        // VAD: skip KWS inference during silence to save CPU
-                        val sumSq = samples.fold(0.0) { acc, v -> acc + v * v }
-                        val rms = kotlin.math.sqrt((sumSq / samples.size).toFloat())
-                        if (rms < 0.003f) continue
+                        // VAD disabled — KWS model recognition rate is the bottleneck, not volume
+                        // TODO: re-enable after improving KWS model or switching to better wake word
 
                         stream.acceptWaveform(samples, SAMPLE_RATE)
                         while (spotter.isReady(stream)) {
