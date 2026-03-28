@@ -10,6 +10,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileOutputStream
@@ -34,12 +35,12 @@ class XunfeiWakeEngine(private val context: Context) {
         private const val SAMPLE_RATE = 16000
         private const val ABILITY_ID = "e867a88f2"
 
-        // 唤醒灵敏度 0-3000，越大越灵敏但误唤醒越多
-        // 格式: "唤醒词索引:阈值"，默认800
-        private const val IVW_THRESHOLD = "0 0:800"
+        // 唤醒灵敏度（nCM门限），越高越严格，越低越灵敏但误唤醒越多
+        // 300=推荐起始值，在keyword.txt中配置
+        private const val NCM_THRESHOLD = 300
 
-        // 音频缓冲区：每次送 1280 bytes = 40ms @16kHz 16bit mono
-        private const val AUDIO_BUFFER_SIZE = 1280
+        // 音频帧大小：320 bytes = 10ms @16kHz 16bit mono（官方推荐值）
+        private const val AUDIO_FRAME_SIZE = 320
 
         // 唤醒词
         private const val WAKE_WORD = "你好小希"
@@ -94,6 +95,7 @@ class XunfeiWakeEngine(private val context: Context) {
                 .appId(appId)
                 .apiKey(apiKey)
                 .apiSecret(apiSecret)
+                .ability(ABILITY_ID)
                 .workDir(workDir)
                 .build()
 
@@ -206,7 +208,6 @@ class XunfeiWakeEngine(private val context: Context) {
 
         // Build start params
         val paramBuilder = AiRequest.builder()
-        paramBuilder.param("wdec_param_nCmThreshold", IVW_THRESHOLD)
         paramBuilder.param("gramLoad", true)
 
         isEnd.set(false)
@@ -259,15 +260,20 @@ class XunfeiWakeEngine(private val context: Context) {
                 Log.i(TAG, "IVW result: key=$key, value=$value, status=${resp.status}")
 
                 if (key == "func_wake_up" || key == "func_pre_wakeup") {
-                    Log.i(TAG, "Wake word detected! key=$key result=$value")
+                    // Parse keyword from JSON: {"keyword":"你好小希","ncm":500,"ncmThresh":300,...}
+                    val detectedKeyword = try {
+                        JSONObject(value).optString("keyword", WAKE_WORD)
+                    } catch (_: Exception) { WAKE_WORD }
+                    val ncm = try {
+                        JSONObject(value).optInt("ncm", 0)
+                    } catch (_: Exception) { 0 }
+                    Log.i(TAG, "Wake word detected! keyword=$detectedKeyword ncm=$ncm key=$key")
 
                     // Extract ring buffer audio for speaker verification
                     val audio = extractRingBuffer()
 
-                    // Notify callback on main thread
-                    // Need scope reference — store it
                     activeScope?.launch(Dispatchers.Main) {
-                        onWakeWord?.invoke(WAKE_WORD, audio)
+                        onWakeWord?.invoke(detectedKeyword, audio)
                     }
                 }
             }
@@ -296,7 +302,7 @@ class XunfeiWakeEngine(private val context: Context) {
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(AUDIO_BUFFER_SIZE * 4)
+            ).coerceAtLeast(AUDIO_FRAME_SIZE * 4)
 
             try {
                 @Suppress("MissingPermission")
@@ -328,12 +334,12 @@ class XunfeiWakeEngine(private val context: Context) {
                     // Start recording
                     recorder.startRecording()
 
-                    val buf = ByteArray(AUDIO_BUFFER_SIZE)
+                    val buf = ByteArray(AUDIO_FRAME_SIZE)
                     var isFirst = true
 
                     // Inner loop: feed audio frames
                     while (isActive && _isRunning.value && !isEnd.get()) {
-                        val read = recorder.read(buf, 0, AUDIO_BUFFER_SIZE)
+                        val read = recorder.read(buf, 0, AUDIO_FRAME_SIZE)
                         if (read > 0) {
                             // Feed to ring buffer for speaker verification
                             feedRingBuffer(buf, read)
@@ -348,8 +354,7 @@ class XunfeiWakeEngine(private val context: Context) {
                             writeAudio(buf.copyOf(read), status)
                         }
 
-                        // Small delay to match ~40ms per frame
-                        // 1280 bytes / (16000 Hz * 2 bytes) = 40ms
+                        // 320 bytes / (16000 Hz * 2 bytes/sample) = 10ms per frame
                     }
 
                     // End session before restarting
@@ -438,10 +443,10 @@ class XunfeiWakeEngine(private val context: Context) {
             if (binFile.exists()) binFile.delete()
 
             val writer = BufferedWriter(OutputStreamWriter(FileOutputStream(keywordFile), "UTF-8"))
-            writer.write("$WAKE_WORD;")
+            writer.write("$WAKE_WORD;nCM:$NCM_THRESHOLD;")
             writer.newLine()
             writer.close()
-            Log.d(TAG, "Wrote keyword file: $WAKE_WORD")
+            Log.d(TAG, "Wrote keyword file: $WAKE_WORD (nCM=$NCM_THRESHOLD)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write keyword file: ${e.message}")
         }
