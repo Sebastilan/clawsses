@@ -594,6 +594,23 @@ class SuperBrainService : Service() {
                             wsClient.sendPhotoResult(null)
                         }
                     }
+                    "listen_start" -> {
+                        Log.i(TAG, "Listen start command")
+                        handleListenStart()
+                    }
+                    "listen_stop" -> {
+                        Log.i(TAG, "Listen stop command")
+                        handleListenStop()
+                    }
+                    "record_start" -> {
+                        // TODO: 视频录制需要添加camera-video依赖 + VideoCapture实现
+                        Log.i(TAG, "Record start command (not yet implemented)")
+                        addSystemMessage("录像功能开发中")
+                    }
+                    "record_stop" -> {
+                        Log.i(TAG, "Record stop command (not yet implemented)")
+                        addSystemMessage("录像功能开发中")
+                    }
                     "shell" -> {
                         val payload = event.payload
                         val cmd = payload?.get("cmd")?.asString ?: return@collect
