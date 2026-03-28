@@ -32,10 +32,10 @@ class SuperBrainService : Service() {
 
         // ── 唤醒引擎配置 ──
         // true=讯飞离线唤醒, false=sherpa-onnx KWS
-        // TODO: 讯飞SDK集成后改为true
-        private const val USE_XUNFEI_WAKE = false
-        // TODO: 填入讯飞开放平台的APPID
-        private const val XUNFEI_APPID = ""
+        private const val USE_XUNFEI_WAKE = true
+        private const val XUNFEI_APPID = "3073ec26"
+        private const val XUNFEI_API_KEY = "dbbc92d916928c96945173ae36c07983"
+        private const val XUNFEI_API_SECRET = "NGE4ZjRjZmNhMDRhYjUyYWU0ZTMzM2Q3"
 
         @Volatile
         var instance: SuperBrainService? = null
@@ -401,7 +401,7 @@ class SuperBrainService : Service() {
             // Try Xunfei wake engine first
             if (USE_XUNFEI_WAKE && XUNFEI_APPID.isNotBlank()) {
                 val xunfei = xunfeiWakeEngine
-                if (xunfei != null && xunfei.init(XUNFEI_APPID)) {
+                if (xunfei != null && xunfei.init(XUNFEI_APPID, XUNFEI_API_KEY, XUNFEI_API_SECRET)) {
                     Log.i(TAG, "Xunfei wake engine initialized — using as primary")
                     useXunfei = true
                 } else {
