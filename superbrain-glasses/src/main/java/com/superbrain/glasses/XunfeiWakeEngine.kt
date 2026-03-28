@@ -181,14 +181,13 @@ class XunfeiWakeEngine(private val context: Context) {
 
         // Create WakeuperListener proxy
         val listenerClass = Class.forName("com.iflytek.cloud.WakeuperListener")
-        val listenerProxy = java.lang.reflect.Proxy.newProxyInstance(
-            listenerClass.classLoader,
-            arrayOf(listenerClass)
-        ) { _, method, args ->
+        // Store proxy ref for restart
+        var listenerProxy: Any? = null
+
+        val handler = java.lang.reflect.InvocationHandler { _, method, args ->
             when (method.name) {
                 "onResult" -> {
-                    // WakeuperResult.getResultString() -> JSON
-                    val result = args?.get(0) ?: return@newProxyInstance null
+                    val result = args?.get(0) ?: return@InvocationHandler null
                     try {
                         val getStr = result.javaClass.getMethod("getResultString")
                         val json = getStr.invoke(result) as? String ?: ""
@@ -200,7 +199,6 @@ class XunfeiWakeEngine(private val context: Context) {
 
                         Log.i(TAG, "Wake word detected: keyword=$keyword, score=$score, id=$id")
 
-                        // Extract ring buffer for speaker verification
                         val audio = extractRingBuffer()
                         scope.launch(Dispatchers.Main) {
                             onWakeWord?.invoke(keyword, audio)
@@ -220,7 +218,7 @@ class XunfeiWakeEngine(private val context: Context) {
                     } catch (e: Exception) {
                         Log.e(TAG, "Wake error: $error")
                     }
-                    // Auto-restart on error if still supposed to be running
+                    // Auto-restart on error
                     if (_isRunning.value) {
                         scope.launch {
                             delay(1000)
@@ -228,26 +226,24 @@ class XunfeiWakeEngine(private val context: Context) {
                                 Log.i(TAG, "Restarting wake detection after error")
                                 try {
                                     val startMethod = w.javaClass.getMethod("startListening", listenerClass)
-                                    startMethod.invoke(w, this@newProxyInstance)
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Restart failed: ${e.message}")
+                                    startMethod.invoke(w, listenerProxy)
+                                } catch (e2: Exception) {
+                                    Log.e(TAG, "Restart failed: ${e2.message}")
                                 }
                             }
                         }
                     }
                 }
-                "onBeginOfSpeech" -> {
-                    Log.d(TAG, "Wake: begin of speech")
-                }
-                "onVolumeChanged" -> {
-                    // Ignore volume changes
-                }
-                "onEvent" -> {
-                    // Used in oneshot mode, we don't use it
-                }
+                "onBeginOfSpeech" -> Log.d(TAG, "Wake: begin of speech")
+                "onVolumeChanged" -> { /* ignore */ }
+                "onEvent" -> { /* oneshot mode, unused */ }
             }
             null
         }
+
+        listenerProxy = java.lang.reflect.Proxy.newProxyInstance(
+            listenerClass.classLoader, arrayOf(listenerClass), handler
+        )
 
         // VoiceWakeuper.startListening(listener)
         try {
