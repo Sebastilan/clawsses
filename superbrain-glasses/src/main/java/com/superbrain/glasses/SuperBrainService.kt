@@ -651,7 +651,7 @@ class SuperBrainService : Service() {
         try {
             val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
             @Suppress("DEPRECATION")
-            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "SuperBrain:WS")
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "SuperBrain:WS")
             wifiLock?.acquire()
             Log.i(TAG, "WiFi lock acquired")
         } catch (e: Exception) {

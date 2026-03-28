@@ -82,7 +82,7 @@ class WakeWordEngine(private val context: Context) {
                         joiner = joiner.absolutePath,
                     ),
                     tokens = tokens.absolutePath,
-                    numThreads = 2,
+                    numThreads = 1,
                     provider = "cpu",
                     modelType = "zipformer2",
                 ),
@@ -153,6 +153,10 @@ class WakeWordEngine(private val context: Context) {
                     val shortsRead = recorder.read(buffer, 0, FRAME_SAMPLES)
                     if (shortsRead > 0) {
                         val samples = FloatArray(shortsRead) { buffer[it] / 32768.0f }
+
+                        // VAD: skip KWS inference during silence to save CPU
+                        val rms = kotlin.math.sqrt(samples.map { it * it }.average().toFloat())
+                        if (rms < 0.01f) continue
 
                         // Update ring buffer
                         for (s in samples) {
