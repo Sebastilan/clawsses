@@ -103,6 +103,7 @@ class SuperBrainService : Service() {
         ttsPlayer = TtsPlayer(this)
         otaUpdater = OtaUpdater(this, scope)
         wifiController = WifiController(this)
+        videoRecorder = VideoRecorder(this)
 
         // Initialize wake word + speaker verification
         wakeWordEngine = WakeWordEngine(this)
@@ -243,7 +244,7 @@ class SuperBrainService : Service() {
             appendLine("=== SuperBrain Status ===")
             appendLine("WS: ${wsClient.getStatus()}")
             appendLine("Audio: recording=${audioCapture.isRecording.value}")
-            appendLine("Camera: capturing=${cameraCapture.isCapturing}")
+            appendLine("Camera: capturing=${cameraCapture.isCapturing}, recording=${videoRecorder.isRecording}")
             appendLine("TTS: enabled=${ttsPlayer.enabled}")
             appendLine("OTA: updating=${otaUpdater.isUpdating}")
             appendLine("WiFi: ${wifiController.getWifiStatus()}")
@@ -582,17 +583,23 @@ class SuperBrainService : Service() {
                     }
                     "take_photo" -> {
                         Log.i(TAG, "Photo requested by server")
-                        try {
-                            wakeScreen()
-                            cameraCapture.capture { base64 ->
-                                scope.launch(Dispatchers.Main) {
-                                    wsClient.sendPhotoResult(base64)
-                                    Log.i(TAG, "Photo sent: ${base64?.length ?: 0} chars")
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Take photo error: ${e.message}")
+                        if (videoRecorder.isRecording) {
+                            Log.w(TAG, "Cannot take photo while recording video")
+                            addSystemMessage("录像中，无法拍照")
                             wsClient.sendPhotoResult(null)
+                        } else {
+                            try {
+                                wakeScreen()
+                                cameraCapture.capture { base64 ->
+                                    scope.launch(Dispatchers.Main) {
+                                        wsClient.sendPhotoResult(base64)
+                                        Log.i(TAG, "Photo sent: ${base64?.length ?: 0} chars")
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Take photo error: ${e.message}")
+                                wsClient.sendPhotoResult(null)
+                            }
                         }
                     }
                     "listen_start" -> {
@@ -604,13 +611,27 @@ class SuperBrainService : Service() {
                         handleListenStop()
                     }
                     "record_start" -> {
-                        // TODO: 视频录制需要添加camera-video依赖 + VideoCapture实现
-                        Log.i(TAG, "Record start command (not yet implemented)")
-                        addSystemMessage("录像功能开发中")
+                        Log.i(TAG, "Record start command")
+                        if (cameraCapture.isCapturing) {
+                            addSystemMessage("拍照中，请稍后再录像")
+                        } else {
+                            wakeScreen()
+                            addSystemMessage("录像中...")
+                            videoRecorder.start { success, message ->
+                                if (!success) addSystemMessage("录像失败: $message")
+                            }
+                        }
                     }
                     "record_stop" -> {
-                        Log.i(TAG, "Record stop command (not yet implemented)")
-                        addSystemMessage("录像功能开发中")
+                        Log.i(TAG, "Record stop command")
+                        videoRecorder.stop { success, filePath ->
+                            if (success) {
+                                addSystemMessage("录像已保存")
+                                Log.i(TAG, "Video saved: $filePath")
+                            } else {
+                                addSystemMessage("未在录像")
+                            }
+                        }
                     }
                     "shell" -> {
                         val payload = event.payload
@@ -775,6 +796,7 @@ class SuperBrainService : Service() {
         wakeWordEngine.cleanup()
         speakerVerifier.cleanup()
         wsClient.disconnect()
+        videoRecorder.cleanup()
         audioCapture.cleanup()
         cameraCapture.cleanup()
         ttsPlayer.cleanup()
