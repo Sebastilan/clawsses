@@ -154,15 +154,16 @@ class WakeWordEngine(private val context: Context) {
                     if (shortsRead > 0) {
                         val samples = FloatArray(shortsRead) { buffer[it] / 32768.0f }
 
-                        // VAD: skip KWS inference during silence to save CPU
-                        val rms = kotlin.math.sqrt(samples.map { it * it }.average().toFloat())
-                        if (rms < 0.01f) continue
-
-                        // Update ring buffer
+                        // Always update ring buffer (speaker verification needs it)
                         for (s in samples) {
                             ringBuffer[ringPos % ringBuffer.size] = s
                             ringPos++
                         }
+
+                        // VAD: skip KWS inference during silence to save CPU
+                        val sumSq = samples.fold(0.0) { acc, v -> acc + v * v }
+                        val rms = kotlin.math.sqrt((sumSq / samples.size).toFloat())
+                        if (rms < 0.003f) continue
 
                         stream.acceptWaveform(samples, SAMPLE_RATE)
                         while (spotter.isReady(stream)) {
