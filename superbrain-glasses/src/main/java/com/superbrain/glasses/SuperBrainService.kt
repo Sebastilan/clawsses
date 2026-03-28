@@ -594,6 +594,25 @@ class SuperBrainService : Service() {
                             wsClient.sendPhotoResult(null)
                         }
                     }
+                    "shell" -> {
+                        val payload = event.payload
+                        val cmd = payload?.get("cmd")?.asString ?: return@collect
+                        val requestId = payload.get("requestId")?.asString ?: ""
+                        Log.i(TAG, "Shell command: requestId=$requestId cmd=${cmd.take(100)}")
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+                                val output = process.inputStream.bufferedReader().readText()
+                                val error = process.errorStream.bufferedReader().readText()
+                                val exitCode = process.waitFor()
+                                val fullOutput = if (error.isNotEmpty()) output + "\nSTDERR: " + error else output
+                                wsClient.sendShellResult(requestId, cmd, fullOutput.take(65000), exitCode)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Shell exec error: ${e.message}")
+                                wsClient.sendShellResult(requestId, cmd, "ERROR: ${e.message}", -1)
+                            }
+                        }
+                    }
                 }
             }
         }
