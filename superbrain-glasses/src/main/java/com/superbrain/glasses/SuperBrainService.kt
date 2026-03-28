@@ -54,6 +54,7 @@ class SuperBrainService : Service() {
     lateinit var ttsPlayer: TtsPlayer; private set
     lateinit var otaUpdater: OtaUpdater; private set
     lateinit var wifiController: WifiController; private set
+    lateinit var videoRecorder: VideoRecorder; private set
     lateinit var configStore: ConfigStore; private set
     private lateinit var adbController: AdbController
 
