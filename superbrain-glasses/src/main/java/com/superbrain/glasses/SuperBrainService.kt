@@ -30,6 +30,13 @@ class SuperBrainService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "superbrain_service"
 
+        // ── 唤醒引擎配置 ──
+        // true=讯飞离线唤醒, false=sherpa-onnx KWS
+        // TODO: 讯飞SDK集成后改为true
+        private const val USE_XUNFEI_WAKE = false
+        // TODO: 填入讯飞开放平台的APPID
+        private const val XUNFEI_APPID = ""
+
         @Volatile
         var instance: SuperBrainService? = null
             private set
@@ -60,9 +67,11 @@ class SuperBrainService : Service() {
 
     // Wake word + Speaker verification
     lateinit var wakeWordEngine: WakeWordEngine; private set
+    var xunfeiWakeEngine: XunfeiWakeEngine? = null; private set
     lateinit var speakerVerifier: SpeakerVerifier; private set
     private var wakeWordEnabled = false
     private var modelsReady = false
+    private var useXunfei = false  // runtime flag: which engine is active
 
     // Pending photo for 小C (captured on wake word, sent with ASR final)
     private var pendingPhoto: String? = null
@@ -107,6 +116,9 @@ class SuperBrainService : Service() {
 
         // Initialize wake word + speaker verification
         wakeWordEngine = WakeWordEngine(this)
+        if (USE_XUNFEI_WAKE && XUNFEI_APPID.isNotBlank()) {
+            xunfeiWakeEngine = XunfeiWakeEngine(this)
+        }
         speakerVerifier = SpeakerVerifier(this)
         initModels()
 
@@ -248,7 +260,7 @@ class SuperBrainService : Service() {
             appendLine("TTS: enabled=${ttsPlayer.enabled}")
             appendLine("OTA: updating=${otaUpdater.isUpdating}")
             appendLine("WiFi: ${wifiController.getWifiStatus()}")
-            appendLine("WakeWord: enabled=$wakeWordEnabled, running=${wakeWordEngine.isRunning.value}, models=$modelsReady")
+            appendLine("WakeWord: enabled=$wakeWordEnabled, engine=${if (useXunfei) "xunfei" else "sherpa"}, running=${if (useXunfei) xunfeiWakeEngine?.isRunning?.value else wakeWordEngine.isRunning.value}, models=$modelsReady")
             appendLine("Speaker: enrolled=${speakerVerifier.isEnrolled}")
             appendLine("Config: $configStore")
             appendLine("Messages: ${_hudState.value.messages.size}")
@@ -267,15 +279,26 @@ class SuperBrainService : Service() {
         if (wakeWordEnabled) return
         wakeWordEnabled = true
         _hudState.update { it.copy(wakeWordActive = true) }
-        wakeWordEngine.start(scope) { keyword, audioSamples ->
-            onWakeWordDetected(keyword, audioSamples)
+        if (useXunfei) {
+            xunfeiWakeEngine?.start(scope) { keyword, audioSamples ->
+                onWakeWordDetected(keyword, audioSamples)
+            }
+            addSystemMessage("Wake word enabled (讯飞): say '万象'")
+        } else {
+            wakeWordEngine.start(scope) { keyword, audioSamples ->
+                onWakeWordDetected(keyword, audioSamples)
+            }
+            addSystemMessage("Wake word enabled: say '万象'")
         }
-        addSystemMessage("Wake word enabled: say '小C'")
     }
 
     fun handleWakeDisable() {
         wakeWordEnabled = false
-        wakeWordEngine.stop()
+        if (useXunfei) {
+            xunfeiWakeEngine?.stop()
+        } else {
+            wakeWordEngine.stop()
+        }
         _hudState.update { it.copy(wakeWordActive = false) }
         addSystemMessage("Wake word disabled")
     }
@@ -322,7 +345,7 @@ class SuperBrainService : Service() {
         addSystemMessage("Listening...")
 
         // Stop wake word detection, start ASR
-        wakeWordEngine.stop()
+        if (useXunfei) xunfeiWakeEngine?.stop() else wakeWordEngine.stop()
 
         // Capture photo simultaneously for 小C
         pendingPhoto = null
@@ -375,8 +398,20 @@ class SuperBrainService : Service() {
 
     private fun initModels() {
         scope.launch(Dispatchers.IO) {
+            // Try Xunfei wake engine first
+            if (USE_XUNFEI_WAKE && XUNFEI_APPID.isNotBlank()) {
+                val xunfei = xunfeiWakeEngine
+                if (xunfei != null && xunfei.init(XUNFEI_APPID)) {
+                    Log.i(TAG, "Xunfei wake engine initialized — using as primary")
+                    useXunfei = true
+                } else {
+                    Log.w(TAG, "Xunfei init failed — falling back to sherpa-onnx")
+                    useXunfei = false
+                }
+            }
+
             val modelsDir = File(filesDir, "models")
-            if (!modelsDir.exists()) {
+            if (!useXunfei && !modelsDir.exists()) {
                 Log.i(TAG, "Models dir not found: $modelsDir — push models via ADB")
                 withContext(Dispatchers.Main) {
                     addSystemMessage("No models. Push to ${modelsDir.absolutePath}")
@@ -384,10 +419,12 @@ class SuperBrainService : Service() {
                 return@launch
             }
 
-            var ok = true
-            if (!wakeWordEngine.init(modelsDir)) {
-                Log.e(TAG, "KWS init failed")
-                ok = false
+            var ok = useXunfei  // If Xunfei is ready, we're good
+            if (!useXunfei) {
+                if (!wakeWordEngine.init(modelsDir)) {
+                    Log.e(TAG, "KWS init failed")
+                    ok = false
+                }
             }
             if (!speakerVerifier.init(modelsDir)) {
                 Log.w(TAG, "Speaker verifier init failed (non-fatal)")
@@ -563,9 +600,18 @@ class SuperBrainService : Service() {
                         observerMode = false
                         handleListenStop()
                         _hudState.update { it.copy(observerMode = false, wakeWordActive = wakeWordEnabled) }
-                        if (wakeWordEnabled && !wakeWordEngine.isRunning.value) {
-                            wakeWordEngine.start(scope) { keyword, audioSamples ->
-                                onWakeWordDetected(keyword, audioSamples)
+                        if (wakeWordEnabled) {
+                            val engineRunning = if (useXunfei) xunfeiWakeEngine?.isRunning?.value == true else wakeWordEngine.isRunning.value
+                            if (!engineRunning) {
+                                if (useXunfei) {
+                                    xunfeiWakeEngine?.start(scope) { keyword, audioSamples ->
+                                        onWakeWordDetected(keyword, audioSamples)
+                                    }
+                                } else {
+                                    wakeWordEngine.start(scope) { keyword, audioSamples ->
+                                        onWakeWordDetected(keyword, audioSamples)
+                                    }
+                                }
                             }
                         }
                     }
@@ -793,6 +839,7 @@ class SuperBrainService : Service() {
         wakeLock?.let { if (it.isHeld) it.release() }
 
         // Cleanup all components
+        xunfeiWakeEngine?.cleanup()
         wakeWordEngine.cleanup()
         speakerVerifier.cleanup()
         wsClient.disconnect()

@@ -70,4 +70,7 @@ dependencies {
 
     // Sherpa-onnx (KWS + Speaker Verification) �?local AAR from GitHub Releases
     implementation(files("libs/sherpa-onnx-1.12.34.aar"))
+
+    // TODO: 讯飞离线唤醒SDK — 取消下行注释并将Msc.jar放到libs/
+    // implementation(files("libs/Msc.jar"))
 }
