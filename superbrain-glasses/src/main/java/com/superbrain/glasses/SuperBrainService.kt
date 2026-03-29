@@ -682,6 +682,38 @@ class SuperBrainService : Service() {
                             }
                         }
                     }
+                    "play_audio" -> {
+                        val payload = event.payload
+                        val data = payload?.get("data")?.asString ?: ""
+                        if (data.isNotBlank()) {
+                            Log.i(TAG, "Playing audio: ${data.length} chars base64")
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+                                    val tempFile = java.io.File.createTempFile("tts_", ".mp3", cacheDir)
+                                    tempFile.writeBytes(bytes)
+                                    withContext(Dispatchers.Main) {
+                                        val mp = android.media.MediaPlayer()
+                                        mp.setDataSource(tempFile.absolutePath)
+                                        mp.setOnCompletionListener {
+                                            it.release()
+                                            tempFile.delete()
+                                        }
+                                        mp.setOnErrorListener { _, what, extra ->
+                                            Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
+                                            mp.release()
+                                            tempFile.delete()
+                                            true
+                                        }
+                                        mp.prepare()
+                                        mp.start()
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Play audio error: ${e.message}")
+                                }
+                            }
+                        }
+                    }
                     "shell" -> {
                         val payload = event.payload
                         val cmd = payload?.get("cmd")?.asString ?: return@collect
