@@ -682,7 +682,7 @@ class SuperBrainService : Service() {
                             scope.launch(Dispatchers.IO) {
                                 try {
                                     val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
-                                    val fmt = payload.get("format")?.asString ?: "mp3"
+                                    val fmt = payload?.get("format")?.asString ?: "mp3"
                                     val ext = if (fmt == "wav") ".wav" else ".mp3"
                                     val tempFile = java.io.File.createTempFile("tts_", ext, cacheDir)
                                     tempFile.writeBytes(bytes)
