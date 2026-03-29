@@ -1,8 +1,6 @@
 package com.superbrain.glasses
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
@@ -14,10 +12,11 @@ import android.hardware.camera2.TotalCaptureResult
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
-import android.graphics.Matrix
 import android.util.Base64
 import android.util.Log
+import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 class CameraCapture(private val context: Context) {
 
@@ -25,6 +24,8 @@ class CameraCapture(private val context: Context) {
         private const val TAG = "CameraCapture"
         private const val JPEG_QUALITY = 95
         private const val AE_CONVERGE_MS = 2000L
+        // Rokid sensor is mounted rotated 270°
+        private const val SENSOR_ROTATION = 270
     }
 
     var isCapturing = false
@@ -75,13 +76,12 @@ class CameraCapture(private val context: Context) {
     }
 
     private fun takePhoto(camera: CameraDevice, onResult: (base64: String?) -> Unit) {
-        // 4032x3024: full 12MP sensor resolution, no downscaling
+        // Full 12MP sensor resolution — no bitmap decode needed, EXIF handles rotation
         val reader = ImageReader.newInstance(4032, 3024, ImageFormat.JPEG, 1)
         imageReader = reader
 
         reader.setOnImageAvailableListener({ r ->
             if (!readyToCapture) {
-                // Discard preview frames - just drain the reader
                 r.acquireLatestImage()?.close()
                 return@setOnImageAvailableListener
             }
@@ -108,7 +108,6 @@ class CameraCapture(private val context: Context) {
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         try {
-                            // Step 1: Run preview for AE/AF convergence
                             val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                                 addTarget(reader.surface)
                                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
@@ -117,7 +116,6 @@ class CameraCapture(private val context: Context) {
                             session.setRepeatingRequest(previewRequest.build(), null, handler)
                             Log.i(TAG, "Preview started, waiting ${AE_CONVERGE_MS}ms for AE/AF...")
 
-                            // Step 2: After AE converges, take the real photo
                             handler?.postDelayed({
                                 try {
                                     readyToCapture = true
@@ -125,7 +123,7 @@ class CameraCapture(private val context: Context) {
                                     val captureRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                                         addTarget(reader.surface)
                                         set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY.toByte())
-                                        set(CaptureRequest.JPEG_ORIENTATION, 0) // Don't rotate JPEG, we rotate bitmap instead
+                                        set(CaptureRequest.JPEG_ORIENTATION, 0) // We set EXIF orientation manually
                                         set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                                         set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                                     }
@@ -166,33 +164,37 @@ class CameraCapture(private val context: Context) {
         }
     }
 
+    private fun rotationToExifOrientation(degrees: Int): Int = when (degrees) {
+        90 -> ExifInterface.ORIENTATION_ROTATE_90
+        180 -> ExifInterface.ORIENTATION_ROTATE_180
+        270 -> ExifInterface.ORIENTATION_ROTATE_270
+        else -> ExifInterface.ORIENTATION_NORMAL
+    }
+
     private fun processCapture(jpegBytes: ByteArray): String? {
+        val tmpFile = File(context.cacheDir, "capture_tmp.jpg")
         return try {
-            // Decode bounds only (no memory allocation)
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
-            Log.i(TAG, "Raw image: ${opts.outWidth}x${opts.outHeight}")
+            // Write raw JPEG bytes to temp file (no bitmap decode = zero OOM risk)
+            tmpFile.writeBytes(jpegBytes)
+            Log.i(TAG, "Wrote ${jpegBytes.size} bytes to temp file")
 
-            // Decode full resolution, no downsampling
-            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = 1 }
-            val decoded = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOpts) ?: return null
-            Log.i(TAG, "Decoded: ${decoded.width}x${decoded.height}")
+            // Set EXIF orientation tag so viewers rotate correctly
+            val exif = ExifInterface(tmpFile.absolutePath)
+            val orientation = rotationToExifOrientation(SENSOR_ROTATION)
+            exif.setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+            exif.saveAttributes()
+            Log.i(TAG, "Set EXIF orientation: $orientation (${SENSOR_ROTATION}°)")
 
-            // Rotate 270° (Rokid sensor is mounted rotated, JPEG_ORIENTATION doesn't work)
-            val matrix = Matrix().apply { postRotate(270f) }
-            val rotated = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
-            decoded.recycle()
-            Log.i(TAG, "Rotated: ${rotated.width}x${rotated.height}")
+            // Read back the EXIF-tagged JPEG
+            val result = tmpFile.readBytes()
+            Log.i(TAG, "Final JPEG: ${result.size} bytes (${result.size / 1024}KB)")
 
-            // Compress to JPEG
-            val os = ByteArrayOutputStream()
-            rotated.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, os)
-            Log.i(TAG, "Photo: ${rotated.width}x${rotated.height}, JPEG ${os.size()} bytes")
-            rotated.recycle()
-            Base64.encodeToString(os.toByteArray(), Base64.NO_WRAP)
+            Base64.encodeToString(result, Base64.NO_WRAP)
         } catch (e: Exception) {
             Log.e(TAG, "Error processing capture", e)
             null
+        } finally {
+            tmpFile.delete()
         }
     }
 
