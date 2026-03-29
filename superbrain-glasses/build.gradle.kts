@@ -68,6 +68,8 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.3.1")
     implementation("androidx.camera:camera-video:1.3.1")
 
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
     // Sherpa-onnx (KWS + Speaker Verification) �?local AAR from GitHub Releases
     implementation(files("libs/sherpa-onnx-1.12.34.aar"))
 
