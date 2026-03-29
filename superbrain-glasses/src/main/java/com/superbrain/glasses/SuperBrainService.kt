@@ -569,16 +569,8 @@ class SuperBrainService : Service() {
                         state.copy(asrText = event.text, asrIsFinal = false)
                     }
                 }
-                // On final ASR result, send chat.send (skip in observer mode — VPS buffers)
-                if (event.isFinal && event.text.isNotBlank() && !observerMode) {
-                    val photo = pendingPhoto
-                    pendingPhoto = null
-                    val attachments = if (photo != null) {
-                        listOf(mapOf("mimeType" to "image/jpeg", "content" to photo))
-                    } else null
-                    wsClient.sendChat(event.text, attachments)
-                    Log.i(TAG, "Sent chat.send: text=${event.text.take(50)}, hasPhoto=${photo != null}")
-                }
+                // VPS ASR callback already routes to LLM — don't send chat.send again
+                // (was causing duplicate responses)
                 // If wake-word mode, continue listening for next utterance
                 if (event.isFinal && wakeWordEnabled) {
                     onAsrComplete()
