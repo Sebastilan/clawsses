@@ -19,9 +19,9 @@ class CameraCapture(private val context: Context) : LifecycleOwner {
 
     companion object {
         private const val TAG = "CameraCapture"
-        private const val MAX_WIDTH = 1280
-        private const val MAX_HEIGHT = 960
-        private const val JPEG_QUALITY = 75
+        private const val MAX_WIDTH = 4032
+        private const val MAX_HEIGHT = 3024
+        private const val JPEG_QUALITY = 95
     }
 
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -105,12 +105,7 @@ class CameraCapture(private val context: Context) : LifecycleOwner {
 
     private fun processCapture(jpegBytes: ByteArray, rotationDegrees: Int): String? {
         return try {
-            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, options)
-
-            val sampleSize = maxOf(options.outWidth / MAX_WIDTH, options.outHeight / MAX_HEIGHT).coerceAtLeast(1)
-            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions) ?: return null
+            var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return null
 
             if (rotationDegrees != 0) {
                 val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
@@ -119,15 +114,11 @@ class CameraCapture(private val context: Context) : LifecycleOwner {
                 bitmap = rotated
             }
 
-            val scale = minOf(MAX_WIDTH.toFloat() / bitmap.width, MAX_HEIGHT.toFloat() / bitmap.height).coerceAtMost(1f)
-            val finalBitmap = if (scale < 1f) {
-                Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
-                    .also { if (it !== bitmap) bitmap.recycle() }
-            } else bitmap
+            Log.d(TAG, "processCapture: ${bitmap.width}x${bitmap.height}, rotation=$rotationDegrees")
 
             val os = ByteArrayOutputStream()
-            finalBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, os)
-            if (finalBitmap !== bitmap) finalBitmap.recycle()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, os)
+            bitmap.recycle()
 
             Base64.encodeToString(os.toByteArray(), Base64.NO_WRAP)
         } catch (e: Exception) {
