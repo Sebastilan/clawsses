@@ -682,23 +682,36 @@ class SuperBrainService : Service() {
                             scope.launch(Dispatchers.IO) {
                                 try {
                                     val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
-                                    val tempFile = java.io.File.createTempFile("tts_", ".mp3", cacheDir)
+                                    val fmt = payload.get("format")?.asString ?: "mp3"
+                                    val ext = if (fmt == "wav") ".wav" else ".mp3"
+                                    val tempFile = java.io.File.createTempFile("tts_", ext, cacheDir)
                                     tempFile.writeBytes(bytes)
                                     withContext(Dispatchers.Main) {
+                                        // Pause ASR to prevent echo pickup
+                                        val wasRecording = audioCapture.isRecording.value
+                                        if (wasRecording) audioCapture.stop()
+
                                         val mp = android.media.MediaPlayer()
                                         mp.setDataSource(tempFile.absolutePath)
                                         mp.setOnCompletionListener {
                                             it.release()
                                             tempFile.delete()
+                                            // Resume ASR after playback
+                                            if (wasRecording) {
+                                                handleListenStart()
+                                                Log.i(TAG, "ASR resumed after TTS playback")
+                                            }
                                         }
                                         mp.setOnErrorListener { _, what, extra ->
                                             Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
                                             mp.release()
                                             tempFile.delete()
+                                            if (wasRecording) handleListenStart()
                                             true
                                         }
                                         mp.prepare()
                                         mp.start()
+                                        Log.i(TAG, "MediaPlayer started, ASR paused")
                                     }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Play audio error: ${e.message}")
