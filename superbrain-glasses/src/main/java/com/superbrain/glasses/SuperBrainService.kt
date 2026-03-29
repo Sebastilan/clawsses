@@ -131,6 +131,9 @@ class SuperBrainService : Service() {
         // Register network callback for auto-reconnect
         registerNetworkCallback()
 
+        // WiFi watchdog: re-enable WiFi if system turns it off
+        startWifiWatchdog()
+
         // Auto-connect if configured
         if (configStore.isConfigured && configStore.autoConnect) {
             Log.i(TAG, "Auto-connecting with saved config: ${configStore.host}:${configStore.port}")
@@ -732,11 +735,25 @@ class SuperBrainService : Service() {
         cm.registerDefaultNetworkCallback(callback)
     }
 
+    @Suppress("DEPRECATION")
+    private fun startWifiWatchdog() {
+        scope.launch(Dispatchers.IO) {
+            val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            while (true) {
+                delay(30_000) // Check every 30 seconds
+                if (!wm.isWifiEnabled) {
+                    Log.w(TAG, "WiFi watchdog: WiFi is OFF, re-enabling...")
+                    wm.isWifiEnabled = true
+                }
+            }
+        }
+    }
+
     private fun acquireWifiLock() {
         try {
             val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
             @Suppress("DEPRECATION")
-            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "SuperBrain:WS")
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "SuperBrain:WS")
             wifiLock?.acquire()
             Log.i(TAG, "WiFi lock acquired")
         } catch (e: Exception) {
