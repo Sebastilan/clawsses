@@ -399,8 +399,35 @@ class SuperBrainService : Service() {
         Log.i(TAG, "ASR complete — continuing to listen for next utterance")
     }
 
+    /**
+     * Attempt NTP time sync. Retries up to [maxRetries] times waiting for WiFi.
+     * Must be called from a background (IO) coroutine.
+     */
+    private suspend fun syncTimeWithRetry(maxRetries: Int = 5): Boolean {
+        repeat(maxRetries) { attempt ->
+            val ok = NtpSync.syncTime(applicationContext)
+            if (ok) {
+                Log.i(TAG, "NTP sync succeeded on attempt ${attempt + 1}")
+                withContext(Dispatchers.Main) {
+                    addSystemMessage("Time synced via NTP")
+                }
+                return true
+            }
+            Log.w(TAG, "NTP sync attempt ${attempt + 1} failed, retrying in 3s...")
+            delay(3000)
+        }
+        Log.e(TAG, "NTP sync failed after $maxRetries attempts")
+        withContext(Dispatchers.Main) {
+            addSystemMessage("NTP sync failed — Xunfei may reject license")
+        }
+        return false
+    }
+
     private fun initModels() {
         scope.launch(Dispatchers.IO) {
+            // Sync time before initializing Xunfei (license validation is time-sensitive)
+            syncTimeWithRetry()
+
             // Try Xunfei wake engine first
             if (USE_XUNFEI_WAKE && XUNFEI_APPID.isNotBlank()) {
                 val xunfei = xunfeiWakeEngine
@@ -719,6 +746,22 @@ class SuperBrainService : Service() {
                             }
                         }
                     }
+                    "sync_time" -> {
+                        // VPS can push its own timestamp as a fallback when NTP is unreachable
+                        val payload = event.payload
+                        val epochMs = payload?.get("epochMs")?.asLong ?: 0L
+                        scope.launch(Dispatchers.IO) {
+                            val ok = if (epochMs > 0) {
+                                NtpSync.setTimeFromServer(applicationContext, epochMs)
+                            } else {
+                                NtpSync.syncTime(applicationContext)
+                            }
+                            Log.i(TAG, "sync_time command: ok=$ok epochMs=$epochMs")
+                            withContext(Dispatchers.Main) {
+                                addSystemMessage("Time sync: ${if (ok) "OK" else "failed"}")
+                            }
+                        }
+                    }
                     "shell" -> {
                         val payload = event.payload
                         val cmd = payload?.get("cmd")?.asString ?: return@collect
@@ -776,12 +819,13 @@ class SuperBrainService : Service() {
     private fun startWifiWatchdog() {
         scope.launch(Dispatchers.IO) {
             val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            // Check immediately on start (no delay on first iteration)
             while (true) {
-                delay(30_000) // Check every 30 seconds
                 if (!wm.isWifiEnabled) {
                     Log.w(TAG, "WiFi watchdog: WiFi is OFF, re-enabling...")
                     wm.isWifiEnabled = true
                 }
+                delay(30_000) // Check every 30 seconds
             }
         }
     }
