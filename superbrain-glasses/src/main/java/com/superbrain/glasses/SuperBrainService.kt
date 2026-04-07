@@ -71,6 +71,7 @@ class SuperBrainService : Service() {
     lateinit var speakerVerifier: SpeakerVerifier; private set
     private var wakeWordEnabled = false
     private var modelsReady = false
+    private var modelsInitStarted = false  // guard: only init models once after first network
     private var useXunfei = false  // runtime flag: which engine is active
 
     // Pending photo for 小C (captured on wake word, sent with ASR final)
@@ -120,7 +121,8 @@ class SuperBrainService : Service() {
             xunfeiWakeEngine = XunfeiWakeEngine(this)
         }
         speakerVerifier = SpeakerVerifier(this)
-        initModels()
+        // Note: initModels() is called from registerNetworkCallback() once WiFi is up,
+        // so that NTP sync and Xunfei online auth both have network access.
 
         // Register ADB receiver on Service (survives Activity death)
         registerAdbReceiver()
@@ -129,10 +131,19 @@ class SuperBrainService : Service() {
         collectWsEvents()
 
         // Register network callback for auto-reconnect
+        // NOTE: initModels() is triggered from onAvailable() once network is up
         registerNetworkCallback()
 
         // WiFi watchdog: re-enable WiFi if system turns it off
         startWifiWatchdog()
+
+        // If network is already available (WiFi was on at boot), start model init now
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        if (cm.activeNetwork != null && !modelsInitStarted) {
+            Log.i(TAG, "Network already available at startup — starting model init")
+            modelsInitStarted = true
+            initModels()
+        }
 
         // Auto-connect if configured
         if (configStore.isConfigured && configStore.autoConnect) {
@@ -791,6 +802,12 @@ class SuperBrainService : Service() {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 Log.i(TAG, "Network available")
+                // Init models the FIRST time network is available (NTP + Xunfei online auth need WiFi)
+                if (!modelsReady && !modelsInitStarted) {
+                    modelsInitStarted = true
+                    Log.i(TAG, "Network up — starting model init (NTP sync + Xunfei auth)")
+                    initModels()
+                }
                 // Auto-reconnect if configured and disconnected
                 if (!wsClient.connected.value && configStore.autoConnect && configStore.isConfigured) {
                     scope.launch {
