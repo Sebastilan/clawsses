@@ -355,27 +355,15 @@ class SuperBrainService : Service() {
             return
         }
 
-        Log.i(TAG, "Speaker verified! Starting ASR + photo...")
+        Log.i(TAG, "Speaker verified! Starting ASR...")
         addSystemMessage("Listening...")
 
         // Stop wake word detection, start ASR
         if (useXunfei) xunfeiWakeEngine?.stop() else wakeWordEngine.stop()
 
-        // Capture photo simultaneously for 小C
+        // Skip auto-photo on wake — camera OOM kills process on 2GB device
+        // Photo can be triggered explicitly via "拍照" voice command
         pendingPhoto = null
-        try {
-            wakeScreen()
-            cameraCapture.capture { base64 ->
-                if (base64 != null) {
-                    pendingPhoto = base64
-                    Log.i(TAG, "Photo captured for 小C (${base64.length} chars)")
-                } else {
-                    Log.w(TAG, "Photo capture failed — will send text only")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Photo capture error: ${e.message}")
-        }
 
         handleListenStart()
     }
