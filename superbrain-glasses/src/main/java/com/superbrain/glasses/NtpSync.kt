@@ -1,7 +1,5 @@
 package com.superbrain.glasses
 
-import android.app.admin.DevicePolicyManager
-import android.content.ComponentName
 import android.content.Context
 import android.util.Log
 import java.net.DatagramPacket
@@ -9,8 +7,8 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 
 /**
- * SNTP client that queries ntp.aliyun.com and sets system time via DevicePolicyManager.
- * Requires the app to be Device Owner.
+ * SNTP client that queries ntp.aliyun.com and sets system time.
+ * Uses "service call alarm 2" which works from app context on Rokid glasses.
  */
 object NtpSync {
 
@@ -18,11 +16,10 @@ object NtpSync {
     private const val NTP_HOST = "ntp.aliyun.com"
     private const val NTP_PORT = 123
     private const val TIMEOUT_MS = 5000
-    // NTP epoch starts 1900-01-01; Unix epoch starts 1970-01-01
     private const val NTP_DELTA = 2208988800L
 
     /**
-     * Queries NTP and sets system time if Device Owner.
+     * Queries NTP and sets system time.
      * @return true if time was set successfully
      */
     fun syncTime(context: Context): Boolean {
@@ -31,8 +28,16 @@ object NtpSync {
                 Log.e(TAG, "NTP query failed")
                 return false
             }
-            Log.i(TAG, "NTP time: $ntpTime ms")
-            setSystemTime(context, ntpTime)
+
+            val drift = Math.abs(ntpTime - System.currentTimeMillis())
+            Log.i(TAG, "NTP time: $ntpTime ms, drift: ${drift}ms")
+
+            if (drift < 30_000) {
+                Log.i(TAG, "Time drift < 30s, no need to sync")
+                return true
+            }
+
+            setSystemTime(ntpTime)
         } catch (e: Exception) {
             Log.e(TAG, "syncTime error: ${e.message}")
             false
@@ -43,7 +48,13 @@ object NtpSync {
      * Sets system time using a timestamp received from VPS (fallback path).
      */
     fun setTimeFromServer(context: Context, epochMs: Long): Boolean {
-        return setSystemTime(context, epochMs)
+        val drift = Math.abs(epochMs - System.currentTimeMillis())
+        Log.i(TAG, "Server time: $epochMs ms, drift: ${drift}ms")
+        if (drift < 30_000) {
+            Log.i(TAG, "Time drift < 30s, no need to sync")
+            return true
+        }
+        return setSystemTime(epochMs)
     }
 
     private fun queryNtp(): Long? {
@@ -52,7 +63,7 @@ object NtpSync {
             socket.soTimeout = TIMEOUT_MS
 
             val buf = ByteArray(48)
-            buf[0] = 0x1B.toByte()  // LI=0, VN=3, Mode=3 (client)
+            buf[0] = 0x1B.toByte()
 
             val address = InetAddress.getByName(NTP_HOST)
             val request = DatagramPacket(buf, buf.size, address, NTP_PORT)
@@ -67,7 +78,6 @@ object NtpSync {
             socket.close()
 
             val data = response.data
-            // Transmit Timestamp (bytes 40-47) — server's send time
             val seconds = ((data[40].toLong() and 0xFF) shl 24) or
                           ((data[41].toLong() and 0xFF) shl 16) or
                           ((data[42].toLong() and 0xFF) shl 8) or
@@ -78,8 +88,6 @@ object NtpSync {
                            (data[47].toLong() and 0xFF)
 
             val ntpMs = (seconds - NTP_DELTA) * 1000L + (fraction * 1000L / 0x100000000L)
-
-            // Apply round-trip correction
             val rtt = t4 - t1
             ntpMs + rtt / 2
         } catch (e: Exception) {
@@ -88,17 +96,26 @@ object NtpSync {
         }
     }
 
-    private fun setSystemTime(context: Context, epochMs: Long): Boolean {
+    /**
+     * Set system time via "service call alarm 2 i64 <epochMs>".
+     * This works on Rokid glasses without root or Device Owner.
+     */
+    private fun setSystemTime(epochMs: Long): Boolean {
         return try {
-            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-            val admin = ComponentName(context, DeviceAdmin::class.java)
-            if (!dpm.isDeviceOwnerApp(context.packageName)) {
-                Log.w(TAG, "Not Device Owner — cannot set time")
-                return false
+            val cmd = "service call alarm 2 i64 $epochMs"
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+            val exitCode = process.waitFor()
+            val output = process.inputStream.bufferedReader().readText().trim()
+            Log.i(TAG, "setSystemTime: cmd='$cmd' exit=$exitCode output='$output'")
+            if (exitCode == 0 && output.contains("00000001")) {
+                Log.i(TAG, "System time set to $epochMs ms successfully")
+                true
+            } else {
+                Log.w(TAG, "setSystemTime may have failed: exit=$exitCode output='$output'")
+                // Check if time actually changed
+                val newDrift = Math.abs(epochMs - System.currentTimeMillis())
+                newDrift < 5_000
             }
-            dpm.setTime(admin, epochMs)
-            Log.i(TAG, "System time set to $epochMs ms")
-            true
         } catch (e: Exception) {
             Log.e(TAG, "setSystemTime error: ${e.message}")
             false
