@@ -43,7 +43,7 @@ class XunfeiWakeEngine(private val context: Context) {
         private const val AUDIO_FRAME_SIZE = 320
 
         // 唤醒词
-        private const val WAKE_WORD = "小C"
+        private const val WAKE_WORD = "万象"
     }
 
     private val _isRunning = MutableStateFlow(false)
