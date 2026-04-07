@@ -363,7 +363,7 @@ class SuperBrainService : Service() {
 
         // Play local wake chime (no network, no base64)
         try {
-            val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 80)
+            val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 50)
             toneGen.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150)
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ toneGen.release() }, 300)
         } catch (e: Exception) {
@@ -726,6 +726,7 @@ class SuperBrainService : Service() {
                                         if (wasRecording) audioCapture.stop()
 
                                         val mp = android.media.MediaPlayer()
+                                        mp.setAudioStreamType(android.media.AudioManager.STREAM_MUSIC)
                                         mp.setDataSource(tempFile.absolutePath)
                                         mp.setOnCompletionListener {
                                             it.release()
@@ -744,6 +745,7 @@ class SuperBrainService : Service() {
                                             true
                                         }
                                         mp.prepare()
+                                        mp.setVolume(0.7f, 0.7f)  // Fixed 70% volume, avoid system volume fluctuation
                                         mp.start()
                                         Log.i(TAG, "MediaPlayer started, ASR paused")
                                     }
