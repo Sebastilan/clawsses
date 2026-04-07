@@ -361,8 +361,16 @@ class SuperBrainService : Service() {
         // Stop wake word detection, start ASR
         if (useXunfei) xunfeiWakeEngine?.stop() else wakeWordEngine.stop()
 
+        // Play local wake chime (no network, no base64)
+        try {
+            val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 80)
+            toneGen.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ toneGen.release() }, 300)
+        } catch (e: Exception) {
+            Log.w(TAG, "Wake chime failed: ${e.message}")
+        }
+
         // Skip auto-photo on wake — camera OOM kills process on 2GB device
-        // Photo can be triggered explicitly via "拍照" voice command
         pendingPhoto = null
 
         handleListenStart()
@@ -706,6 +714,7 @@ class SuperBrainService : Service() {
                         if (data.isNotBlank()) {
                             Log.i(TAG, "Playing audio: ${data.length} chars base64")
                             scope.launch(Dispatchers.IO) {
+                                val wasRecording = audioCapture.isRecording.value
                                 try {
                                     val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
                                     val fmt = payload?.get("format")?.asString ?: "mp3"
@@ -714,7 +723,6 @@ class SuperBrainService : Service() {
                                     tempFile.writeBytes(bytes)
                                     withContext(Dispatchers.Main) {
                                         // Pause ASR to prevent echo pickup
-                                        val wasRecording = audioCapture.isRecording.value
                                         if (wasRecording) audioCapture.stop()
 
                                         val mp = android.media.MediaPlayer()
@@ -741,6 +749,10 @@ class SuperBrainService : Service() {
                                     }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Play audio error: ${e.message}")
+                                    // Must resume ASR if we stopped it
+                                    if (wasRecording) {
+                                        withContext(Dispatchers.Main) { handleListenStart() }
+                                    }
                                 }
                             }
                         }
