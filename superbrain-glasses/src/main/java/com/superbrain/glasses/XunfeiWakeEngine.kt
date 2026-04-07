@@ -224,16 +224,16 @@ class XunfeiWakeEngine(private val context: Context) {
     }
 
     // Reusable builder/audio to avoid GC pressure (100 calls/sec)
-    private var reuseAudio: AiAudio? = null
+    private var reuseAudio: AiAudio.Holder? = null
 
     private fun writeAudio(data: ByteArray, status: AiStatus) {
         if (isEnd.get()) return
         val handle = aiHandle ?: return
 
         try {
-            val audio = reuseAudio ?: AiAudio.get("wav").also { reuseAudio = it }
-            audio.data(data).status(status).valid()
-            val req = AiRequest.builder().payload(audio).build()
+            val audioHolder = reuseAudio ?: AiAudio.get("wav").also { reuseAudio = it }
+            val aiAudio = audioHolder.data(data).status(status).valid()
+            val req = AiRequest.builder().payload(aiAudio).build()
             val ret = AiHelper.getInst().write(req, handle)
             if (ret != 0) {
                 Log.w(TAG, "IVW write failed: $ret")
