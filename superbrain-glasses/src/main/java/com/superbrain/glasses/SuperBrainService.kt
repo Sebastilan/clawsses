@@ -11,6 +11,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -842,7 +843,15 @@ class SuperBrainService : Service() {
             while (true) {
                 if (!wm.isWifiEnabled) {
                     Log.w(TAG, "WiFi watchdog: WiFi is OFF, re-enabling...")
-                    wm.isWifiEnabled = true
+                    // Settings.Global works with WRITE_SECURE_SETTINGS (granted via ADB)
+                    // WifiManager.setWifiEnabled is broken on Android 10+ for non-system apps
+                    try {
+                        Settings.Global.putInt(contentResolver, Settings.Global.WIFI_ON, 1)
+                        Log.i(TAG, "WiFi watchdog: enabled via Settings.Global")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "WiFi watchdog: Settings.Global failed, trying WifiManager", e)
+                        wm.isWifiEnabled = true
+                    }
                 }
                 delay(30_000) // Check every 30 seconds
             }
