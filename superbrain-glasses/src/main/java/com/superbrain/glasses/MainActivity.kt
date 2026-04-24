@@ -93,8 +93,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        Log.d(TAG, "dispatchKeyEvent: code=${event.keyCode} action=${event.action}")
+        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_BACK) {
             val svc = service ?: SuperBrainService.instance
             val isListening = svc?.hudState?.value?.isListening ?: false
             if (!isListening) {
@@ -106,7 +107,7 @@ class MainActivity : ComponentActivity() {
             }
             return true
         }
-        return super.onKeyDown(keyCode, event)
+        return super.dispatchKeyEvent(event)
     }
 
     private fun playTone(tone: Int) {
