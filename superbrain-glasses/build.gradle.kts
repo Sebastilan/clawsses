@@ -1,15 +1,7 @@
-import java.util.Properties
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-}
-
-// Load OSS credentials from local.properties (gitignored, never committed)
-val localProps = Properties().apply {
-    val f = rootProject.file("local.properties")
-    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -22,9 +14,6 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
-
-        buildConfigField("String", "OSS_ACCESS_KEY_ID",     "\"${localProps["oss.accessKeyId"]     ?: ""}\"")
-        buildConfigField("String", "OSS_ACCESS_KEY_SECRET", "\"${localProps["oss.accessKeySecret"] ?: ""}\"")
     }
 
     buildTypes {
@@ -81,12 +70,9 @@ dependencies {
 
     implementation("androidx.exifinterface:exifinterface:1.3.7")
 
-    // Sherpa-onnx (KWS + Speaker Verification) �?local AAR from GitHub Releases
+    // Sherpa-onnx (KWS + Speaker Verification) local AAR from GitHub Releases
     implementation(files("libs/sherpa-onnx-1.12.34.aar"))
 
     // 讯飞 AIKit 离线唤醒SDK
     implementation(files("libs/AIKit.aar"))
-
-    // Aliyun OSS Android SDK for direct photo upload
-    implementation("com.aliyun.dpa:oss-android-sdk:2.9.13")
 }
