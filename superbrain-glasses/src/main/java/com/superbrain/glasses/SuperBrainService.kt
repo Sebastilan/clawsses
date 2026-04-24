@@ -726,6 +726,17 @@ class SuperBrainService : Service() {
                                         // Pause ASR to prevent echo pickup
                                         if (wasRecording) audioCapture.stop()
 
+                                        // 锁死系统 STREAM_MUSIC 到固定值，避免 TTS 音量随系统音量波动
+                                        // mp.setVolume() 是相对倍数，系统音量被别的事件拉到 max 时会变吵
+                                        val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                                        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                                        val targetVol = (max * 0.5).toInt().coerceAtLeast(1)  // 锁到 50% max (约 7/15)
+                                        val beforeVol = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+                                        if (beforeVol != targetVol) {
+                                            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetVol, 0)
+                                            Log.i(TAG, "TTS volume lock: $beforeVol -> $targetVol (max=$max)")
+                                        }
+
                                         val mp = android.media.MediaPlayer()
                                         mp.setAudioStreamType(android.media.AudioManager.STREAM_MUSIC)
                                         mp.setDataSource(tempFile.absolutePath)
@@ -746,7 +757,7 @@ class SuperBrainService : Service() {
                                             true
                                         }
                                         mp.prepare()
-                                        mp.setVolume(0.7f, 0.7f)  // Fixed 70% volume, avoid system volume fluctuation
+                                        mp.setVolume(1.0f, 1.0f)  // 相对音量用 1.0，实际音量由系统 STREAM_MUSIC（已锁 50% max）决定
                                         mp.start()
                                         Log.i(TAG, "MediaPlayer started, ASR paused")
                                     }
