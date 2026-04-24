@@ -63,27 +63,27 @@ class CameraCapture(private val context: Context) {
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
                     cleanup()
-                    onResult(null, null)
+                    onResult(null)
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
                     Log.e(TAG, "Camera open error: $error")
                     camera.close()
                     cleanup()
-                    onResult(null, null)
+                    onResult(null)
                 }
             }, handler)
         } catch (e: CameraAccessException) {
             Log.e(TAG, "openCamera failed", e)
             cleanup()
-            onResult(null, null)
+            onResult(null)
         } catch (e: SecurityException) {
             Log.e(TAG, "Camera permission denied", e)
             cleanup()
-            onResult(null, null)
+            onResult(null)
         }
     }
 
-    private fun takePhoto(camera: CameraDevice, onResult: (file: File?, base64: String?) -> Unit) {
+    private fun takePhoto(camera: CameraDevice, onResult: (file: File?) -> Unit) {
         // Full 12MP sensor resolution — no bitmap decode needed, EXIF handles rotation
         val reader = ImageReader.newInstance(4032, 3024, ImageFormat.JPEG, 1)
         imageReader = reader
@@ -100,14 +100,14 @@ class CameraCapture(private val context: Context) {
                 buffer.get(bytes)
                 image.close()
                 Log.i(TAG, "Captured JPEG: ${bytes.size} bytes")
-                val (photoFile, base64) = processCapture(bytes) ?: run {
-                    onResult(null, null)
+                val photoFile = processCapture(bytes) ?: run {
+                    onResult(null)
                     return@setOnImageAvailableListener
                 }
-                onResult(photoFile, base64)
+                onResult(photoFile)
             } catch (e: Exception) {
                 Log.e(TAG, "Error reading image", e)
-                onResult(null, null)
+                onResult(null)
             } finally {
                 cleanup()
             }
@@ -150,19 +150,19 @@ class CameraCapture(private val context: Context) {
                                     }, handler)
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Capture failed", e)
-                                    onResult(null, null)
+                                    onResult(null)
                                     cleanup()
                                 }
                             }, AE_CONVERGE_MS)
                         } catch (e: CameraAccessException) {
                             Log.e(TAG, "Preview request failed", e)
-                            onResult(null, null)
+                            onResult(null)
                             cleanup()
                         }
                     }
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         Log.e(TAG, "Session configure failed")
-                        onResult(null, null)
+                        onResult(null)
                         cleanup()
                     }
                 },
@@ -170,7 +170,7 @@ class CameraCapture(private val context: Context) {
             )
         } catch (e: CameraAccessException) {
             Log.e(TAG, "createCaptureSession failed", e)
-            onResult(null, null)
+            onResult(null)
             cleanup()
         }
     }
@@ -182,42 +182,18 @@ class CameraCapture(private val context: Context) {
         else -> ExifInterface.ORIENTATION_NORMAL
     }
 
-    private fun processCapture(jpegBytes: ByteArray): Pair<File, String>? {
+    private fun processCapture(jpegBytes: ByteArray): File? {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmssSSS", Locale.US).format(Date())
-        val outFile = File(context.cacheDir, "photo_$ts.webp")
+        val outFile = File(context.cacheDir, "photo_$ts.jpg")
         return try {
-            // 降采样 decode：12MP→3MP bitmap，~12MB RAM（Rokid 安全区）
-            val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-            var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
-                ?: return null
-
-            // 旋转像素以使图像正向（而不是只写 EXIF tag，后端/小C Read 不解析 EXIF）
-            if (SENSOR_ROTATION != 0) {
-                val matrix = Matrix().apply { postRotate(SENSOR_ROTATION.toFloat()) }
-                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-                if (rotated !== bitmap) bitmap.recycle()
-                bitmap = rotated
-            }
-
-            // WebP q85 压缩：~150-300KB，视觉无感差，VLM 识别充足
-            val os = ByteArrayOutputStream()
-            @Suppress("DEPRECATION")
-            val fmt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                Bitmap.CompressFormat.WEBP_LOSSY
-            else
-                Bitmap.CompressFormat.WEBP
-            bitmap.compress(fmt, 85, os)
-            bitmap.recycle()
-
-            val compressed = os.toByteArray()
-            outFile.writeBytes(compressed)
-            Log.i(TAG, "Photo compressed: ${compressed.size / 1024}KB WebP q85 (from ${jpegBytes.size / 1024}KB JPEG)")
-
-            Pair(outFile, Base64.encodeToString(compressed, Base64.NO_WRAP))
-        } catch (e: OutOfMemoryError) {
-            Log.e(TAG, "OOM on processCapture", e)
-            outFile.delete()
-            null
+            // 零 bitmap 方案：直接写 JPEG bytes，不 decode（避免 Rokid lowmemorykiller 150MB 阈值触发）
+            outFile.writeBytes(jpegBytes)
+            // 旋转靠 EXIF tag（OSS 上的看图器/小C Read 后交给 VLM 都能处理 EXIF）
+            val exif = ExifInterface(outFile.absolutePath)
+            exif.setAttribute(ExifInterface.TAG_ORIENTATION, rotationToExifOrientation(SENSOR_ROTATION).toString())
+            exif.saveAttributes()
+            Log.i(TAG, "Photo saved: ${outFile.name} (${jpegBytes.size / 1024}KB, EXIF rot=${SENSOR_ROTATION})")
+            outFile
         } catch (e: Exception) {
             Log.e(TAG, "Error processing capture", e)
             outFile.delete()

@@ -196,17 +196,12 @@ class SuperBrainService : Service() {
         try {
             wakeScreen()
             addSystemMessage("Capturing photo...")
-            cameraCapture.capture { _, base64 ->
+            cameraCapture.capture { file ->
                 scope.launch(Dispatchers.Main) {
-                    if (base64 != null) {
-                        addSystemMessage("Photo captured, sending to AI...")
-                        val attachments = listOf(
-                            mapOf("mimeType" to "image/jpeg", "content" to base64)
-                        )
-                        _hudState.update { state ->
-                            state.copy(messages = state.messages + HudMessage("user", "[Photo sent]"))
-                        }
-                        wsClient.sendChat("Describe what you see in this image.", attachments)
+                    if (file != null) {
+                        addSystemMessage("Photo captured: ${file.length() / 1024}KB")
+                        // ADB PHOTO 路径不用 base64 attachment 了（4MB JPEG + 6MB base64 = OOM）
+                        // 如要发给小C 让 take_photo command 走 OSS 路径
                     } else {
                         addSystemMessage("Photo capture failed")
                     }
@@ -669,26 +664,27 @@ class SuperBrainService : Service() {
                         } else {
                             try {
                                 wakeScreen()
-                                cameraCapture.capture { file, base64 ->
+                                cameraCapture.capture { file ->
                                     scope.launch(Dispatchers.Main) {
-                                        if (USE_OSS_PHOTO_UPLOAD && file != null) {
-                                            addSystemMessage("上传照片到OSS...")
-                                            val key = OssUploader.upload(this@SuperBrainService, file)
-                                            if (key != null) {
-                                                wsClient.sendPhotoUploaded(
-                                                    key = key,
-                                                    url = OssUploader.ossUrl(key),
-                                                    size = file.length(),
-                                                    format = "jpeg"
-                                                )
-                                                Log.i(TAG, "Photo uploaded to OSS: $key")
-                                            } else {
-                                                Log.w(TAG, "OSS upload failed, falling back to base64")
-                                                wsClient.sendPhotoResult(base64)
-                                            }
+                                        if (file == null) {
+                                            wsClient.sendPhotoResult(null)
+                                            Log.w(TAG, "Photo capture returned null")
+                                            return@launch
+                                        }
+                                        addSystemMessage("上传照片到OSS...")
+                                        val key = OssUploader.upload(this@SuperBrainService, file)
+                                        if (key != null) {
+                                            wsClient.sendPhotoUploaded(
+                                                key = key,
+                                                url = OssUploader.ossUrl(key),
+                                                size = file.length(),
+                                                format = "jpeg"
+                                            )
+                                            Log.i(TAG, "Photo uploaded to OSS: $key (${file.length()/1024}KB)")
                                         } else {
-                                            wsClient.sendPhotoResult(base64)
-                                            Log.i(TAG, "Photo sent via base64: ${base64?.length ?: 0} chars")
+                                            // OSS 失败不回退 base64（4MB JPEG 转 base64 OOM）
+                                            Log.e(TAG, "OSS upload failed, no fallback (would OOM)")
+                                            wsClient.sendPhotoResult(null)
                                         }
                                     }
                                 }
