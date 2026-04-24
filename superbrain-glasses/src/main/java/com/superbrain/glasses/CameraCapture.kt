@@ -44,8 +44,8 @@ class CameraCapture(private val context: Context) {
     private var imageReader: ImageReader? = null
     @Volatile private var readyToCapture = false
 
-    /** Callback delivers (savedFile, base64String). Either can be null on error. */
-    fun capture(onResult: (file: File?, base64: String?) -> Unit) {
+    /** Callback delivers saved JPEG file (null on error). base64 由调用方按需生成以避免 OOM. */
+    fun capture(onResult: (file: File?) -> Unit) {
         if (isCapturing) return
         isCapturing = true
         readyToCapture = false
