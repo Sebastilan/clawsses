@@ -252,6 +252,23 @@ class WsClient(private val scope: CoroutineScope) {
         Log.i(TAG, "Sent photo.result: ${base64?.length ?: 0} chars")
     }
 
+    fun sendPhotoUploaded(key: String, url: String?, size: Long, format: String) {
+        if (!authenticated) return
+        val req = mapOf(
+            "type" to "req",
+            "id" to "photo-uploaded-${nextId()}",
+            "method" to "photo_uploaded",
+            "params" to mapOf(
+                "key" to key,
+                "url" to (url ?: ""),
+                "size" to size,
+                "format" to format
+            )
+        )
+        send(gson.toJson(req))
+        Log.i(TAG, "Sent photo_uploaded: key=$key size=$size")
+    }
+
     fun sendShellResult(requestId: String, cmd: String, output: String, exitCode: Int) {
         if (!authenticated) return
         val req = mapOf(

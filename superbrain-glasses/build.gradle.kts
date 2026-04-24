@@ -4,6 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Load OSS credentials from local.properties (gitignored, never committed)
+val localProps = java.util.Properties().also { p ->
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use(p::load)
+}
+
 android {
     namespace = "com.superbrain.glasses"
     compileSdk = 34
@@ -14,6 +20,9 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
+
+        buildConfigField("String", "OSS_ACCESS_KEY_ID",     "\"${localProps["oss.accessKeyId"]     ?: ""}\"")
+        buildConfigField("String", "OSS_ACCESS_KEY_SECRET", "\"${localProps["oss.accessKeySecret"] ?: ""}\"")
     }
 
     buildTypes {
@@ -75,4 +84,7 @@ dependencies {
 
     // 讯飞 AIKit 离线唤醒SDK
     implementation(files("libs/AIKit.aar"))
+
+    // Aliyun OSS Android SDK for direct photo upload
+    implementation("com.aliyun.dpa:oss-android-sdk:2.9.13")
 }

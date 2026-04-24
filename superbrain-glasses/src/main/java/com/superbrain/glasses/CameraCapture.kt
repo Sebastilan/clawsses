@@ -17,6 +17,9 @@ import android.util.Log
 import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class CameraCapture(private val context: Context) {
 
@@ -37,7 +40,8 @@ class CameraCapture(private val context: Context) {
     private var imageReader: ImageReader? = null
     @Volatile private var readyToCapture = false
 
-    fun capture(onResult: (base64: String?) -> Unit) {
+    /** Callback delivers (savedFile, base64String). Either can be null on error. */
+    fun capture(onResult: (file: File?, base64: String?) -> Unit) {
         if (isCapturing) return
         isCapturing = true
         readyToCapture = false
@@ -55,27 +59,27 @@ class CameraCapture(private val context: Context) {
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
                     cleanup()
-                    onResult(null)
+                    onResult(null, null)
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
                     Log.e(TAG, "Camera open error: $error")
                     camera.close()
                     cleanup()
-                    onResult(null)
+                    onResult(null, null)
                 }
             }, handler)
         } catch (e: CameraAccessException) {
             Log.e(TAG, "openCamera failed", e)
             cleanup()
-            onResult(null)
+            onResult(null, null)
         } catch (e: SecurityException) {
             Log.e(TAG, "Camera permission denied", e)
             cleanup()
-            onResult(null)
+            onResult(null, null)
         }
     }
 
-    private fun takePhoto(camera: CameraDevice, onResult: (base64: String?) -> Unit) {
+    private fun takePhoto(camera: CameraDevice, onResult: (file: File?, base64: String?) -> Unit) {
         // Full 12MP sensor resolution — no bitmap decode needed, EXIF handles rotation
         val reader = ImageReader.newInstance(4032, 3024, ImageFormat.JPEG, 1)
         imageReader = reader
@@ -92,11 +96,14 @@ class CameraCapture(private val context: Context) {
                 buffer.get(bytes)
                 image.close()
                 Log.i(TAG, "Captured JPEG: ${bytes.size} bytes")
-                val base64 = processCapture(bytes)
-                onResult(base64)
+                val (photoFile, base64) = processCapture(bytes) ?: run {
+                    onResult(null, null)
+                    return@setOnImageAvailableListener
+                }
+                onResult(photoFile, base64)
             } catch (e: Exception) {
                 Log.e(TAG, "Error reading image", e)
-                onResult(null)
+                onResult(null, null)
             } finally {
                 cleanup()
             }
@@ -139,19 +146,19 @@ class CameraCapture(private val context: Context) {
                                     }, handler)
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Capture failed", e)
-                                    onResult(null)
+                                    onResult(null, null)
                                     cleanup()
                                 }
                             }, AE_CONVERGE_MS)
                         } catch (e: CameraAccessException) {
                             Log.e(TAG, "Preview request failed", e)
-                            onResult(null)
+                            onResult(null, null)
                             cleanup()
                         }
                     }
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         Log.e(TAG, "Session configure failed")
-                        onResult(null)
+                        onResult(null, null)
                         cleanup()
                     }
                 },
@@ -159,7 +166,7 @@ class CameraCapture(private val context: Context) {
             )
         } catch (e: CameraAccessException) {
             Log.e(TAG, "createCaptureSession failed", e)
-            onResult(null)
+            onResult(null, null)
             cleanup()
         }
     }
@@ -171,30 +178,30 @@ class CameraCapture(private val context: Context) {
         else -> ExifInterface.ORIENTATION_NORMAL
     }
 
-    private fun processCapture(jpegBytes: ByteArray): String? {
-        val tmpFile = File(context.cacheDir, "capture_tmp.jpg")
+    private fun processCapture(jpegBytes: ByteArray): Pair<File, String>? {
+        val ts = SimpleDateFormat("yyyyMMdd_HHmmssSSS", Locale.US).format(Date())
+        val outFile = File(context.cacheDir, "photo_$ts.jpg")
         return try {
-            // Write raw JPEG bytes to temp file (no bitmap decode = zero OOM risk)
-            tmpFile.writeBytes(jpegBytes)
-            Log.i(TAG, "Wrote ${jpegBytes.size} bytes to temp file")
+            // Write raw JPEG bytes (no bitmap decode = zero OOM risk)
+            outFile.writeBytes(jpegBytes)
+            Log.i(TAG, "Wrote ${jpegBytes.size} bytes to ${outFile.name}")
 
             // Set EXIF orientation tag so viewers rotate correctly
-            val exif = ExifInterface(tmpFile.absolutePath)
+            val exif = ExifInterface(outFile.absolutePath)
             val orientation = rotationToExifOrientation(SENSOR_ROTATION)
             exif.setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
             exif.saveAttributes()
             Log.i(TAG, "Set EXIF orientation: $orientation (${SENSOR_ROTATION}°)")
 
-            // Read back the EXIF-tagged JPEG
-            val result = tmpFile.readBytes()
-            Log.i(TAG, "Final JPEG: ${result.size} bytes (${result.size / 1024}KB)")
+            // Read back the EXIF-tagged JPEG for base64 encoding
+            val result = outFile.readBytes()
+            Log.i(TAG, "Photo ready: ${outFile.absolutePath} (${result.size / 1024}KB)")
 
-            Base64.encodeToString(result, Base64.NO_WRAP)
+            Pair(outFile, Base64.encodeToString(result, Base64.NO_WRAP))
         } catch (e: Exception) {
             Log.e(TAG, "Error processing capture", e)
+            outFile.delete()
             null
-        } finally {
-            tmpFile.delete()
         }
     }
 

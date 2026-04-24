@@ -31,6 +31,9 @@ class SuperBrainService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "superbrain_service"
 
+        // true=照片走OSS直传, false=base64通过WebSocket发送（兜底）
+        const val USE_OSS_PHOTO_UPLOAD = true
+
         // ── 唤醒引擎配置 ──
         // true=讯飞离线唤醒, false=sherpa-onnx KWS
         private const val USE_XUNFEI_WAKE = false
@@ -193,7 +196,7 @@ class SuperBrainService : Service() {
         try {
             wakeScreen()
             addSystemMessage("Capturing photo...")
-            cameraCapture.capture { base64 ->
+            cameraCapture.capture { _, base64 ->
                 scope.launch(Dispatchers.Main) {
                     if (base64 != null) {
                         addSystemMessage("Photo captured, sending to AI...")
@@ -666,10 +669,27 @@ class SuperBrainService : Service() {
                         } else {
                             try {
                                 wakeScreen()
-                                cameraCapture.capture { base64 ->
+                                cameraCapture.capture { file, base64 ->
                                     scope.launch(Dispatchers.Main) {
-                                        wsClient.sendPhotoResult(base64)
-                                        Log.i(TAG, "Photo sent: ${base64?.length ?: 0} chars")
+                                        if (USE_OSS_PHOTO_UPLOAD && file != null) {
+                                            addSystemMessage("上传照片到OSS...")
+                                            val key = OssUploader.upload(this@SuperBrainService, file)
+                                            if (key != null) {
+                                                wsClient.sendPhotoUploaded(
+                                                    key = key,
+                                                    url = OssUploader.ossUrl(key),
+                                                    size = file.length(),
+                                                    format = "jpeg"
+                                                )
+                                                Log.i(TAG, "Photo uploaded to OSS: $key")
+                                            } else {
+                                                Log.w(TAG, "OSS upload failed, falling back to base64")
+                                                wsClient.sendPhotoResult(base64)
+                                            }
+                                        } else {
+                                            wsClient.sendPhotoResult(base64)
+                                            Log.i(TAG, "Photo sent via base64: ${base64?.length ?: 0} chars")
+                                        }
                                     }
                                 }
                             } catch (e: Exception) {
