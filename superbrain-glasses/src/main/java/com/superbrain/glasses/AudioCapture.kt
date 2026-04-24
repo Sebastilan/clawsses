@@ -81,6 +81,20 @@ class AudioCapture(private val context: Context) {
                 return
             }
 
+            // 按模式挂/不挂 AudioEffect（硬件软件混合降噪）
+            val sessionId = audioRecord!!.audioSessionId
+            if (mode == "conversation") {
+                val nsOk = NoiseSuppressor.isAvailable()
+                val aecOk = AcousticEchoCanceler.isAvailable()
+                val agcOk = AutomaticGainControl.isAvailable()
+                if (nsOk) ns = NoiseSuppressor.create(sessionId)?.apply { enabled = true }
+                if (aecOk) aec = AcousticEchoCanceler.create(sessionId)?.apply { enabled = true }
+                if (agcOk) agc = AutomaticGainControl.create(sessionId)?.apply { enabled = true }
+                Log.i(TAG, "AudioEffect mode=conversation NS=$nsOk/${ns?.enabled} AEC=$aecOk/${aec?.enabled} AGC=$agcOk/${agc?.enabled}")
+            } else {
+                Log.i(TAG, "AudioEffect mode=$mode: no effects attached (raw capture)")
+            }
+
             audioRecord?.startRecording()
             _isRecording.value = true
             Log.i(TAG, "Recording started")
@@ -108,6 +122,10 @@ class AudioCapture(private val context: Context) {
         _isRecording.value = false
         recordJob?.cancel()
         recordJob = null
+        try { ns?.release() } catch (_: Exception) {}
+        try { aec?.release() } catch (_: Exception) {}
+        try { agc?.release() } catch (_: Exception) {}
+        ns = null; aec = null; agc = null
         try {
             audioRecord?.stop()
         } catch (_: Exception) {}
