@@ -184,34 +184,21 @@ class CameraCapture(private val context: Context) {
 
     private fun processCapture(jpegBytes: ByteArray): File? {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmssSSS", Locale.US).format(Date())
-        val outFile = File(context.cacheDir, "photo_$ts.webp")
+        val outFile = File(context.cacheDir, "photo_$ts.jpg")
         return try {
-            // 降采样 decode：12MP→3MP bitmap，~12MB RAM（Rokid 安全区）
-            val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-            var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
-                ?: return null
-
-            // 旋转像素使图像正向（EXIF tag 不是所有消费方都解析）
-            if (SENSOR_ROTATION != 0) {
-                val matrix = Matrix().apply { postRotate(SENSOR_ROTATION.toFloat()) }
-                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-                if (rotated !== bitmap) bitmap.recycle()
-                bitmap = rotated
-            }
-
-            // WebP q85 压缩：~150-300KB，VLM 识别充足
-            val os = ByteArrayOutputStream()
-            @Suppress("DEPRECATION")
-            val fmt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                Bitmap.CompressFormat.WEBP_LOSSY
-            else
-                Bitmap.CompressFormat.WEBP
-            bitmap.compress(fmt, 85, os)
+            // Decode full-res then re-encode at JPEG q85 (~1.5MB vs 5MB raw)
+            val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                ?: return null.also { Log.e(TAG, "decodeByteArray returned null") }
+            val baos = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos)
             bitmap.recycle()
-
-            val compressed = os.toByteArray()
+            val compressed = baos.toByteArray()
             outFile.writeBytes(compressed)
-            Log.i(TAG, "Photo compressed: ${compressed.size / 1024}KB WebP q85 (from ${jpegBytes.size / 1024}KB JPEG)")
+            // Preserve sensor rotation in EXIF (compress drops original EXIF)
+            val exif = ExifInterface(outFile.absolutePath)
+            exif.setAttribute(ExifInterface.TAG_ORIENTATION, rotationToExifOrientation(SENSOR_ROTATION).toString())
+            exif.saveAttributes()
+            Log.i(TAG, "Photo saved: ${outFile.name} (${compressed.size / 1024}KB JPEG q85, EXIF rot=${SENSOR_ROTATION})")
             outFile
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "OOM on processCapture", e)
@@ -224,7 +211,7 @@ class CameraCapture(private val context: Context) {
         }
     }
 
-    fun cleanup() {
+        fun cleanup() {
         readyToCapture = false
         try { cameraDevice?.close() } catch (_: Exception) {}
         try { imageReader?.close() } catch (_: Exception) {}
