@@ -37,8 +37,11 @@ class AudioCapture(private val context: Context) {
     /**
      * Start recording and send PCM chunks via onChunk callback.
      * Each chunk is base64-encoded PCM 16-bit mono 16kHz.
+     *
+     * @param mode "conversation" → VOICE_RECOGNITION (hw NS/AEC, near-field, rejects far-field noise)
+     *             "ambient"      → CAMCORDER (wider pickup, captures room/scene audio)
      */
-    fun start(scope: CoroutineScope, onChunk: (base64Pcm: String) -> Unit) {
+    fun start(scope: CoroutineScope, mode: String = "conversation", onChunk: (base64Pcm: String) -> Unit) {
         if (_isRecording.value) return
 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
@@ -53,9 +56,15 @@ class AudioCapture(private val context: Context) {
             return
         }
 
+        val source = when (mode) {
+            "ambient" -> MediaRecorder.AudioSource.CAMCORDER
+            else -> MediaRecorder.AudioSource.VOICE_RECOGNITION
+        }
+        Log.i(TAG, "AudioRecord mode=$mode source=$source")
+
         try {
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.CAMCORDER,  // wider pickup range for room audio
+                source,
                 SAMPLE_RATE, CHANNEL, ENCODING,
                 bufferSize * 2
             )

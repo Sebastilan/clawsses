@@ -215,11 +215,11 @@ class SuperBrainService : Service() {
         }
     }
 
-    fun handleListenStart() {
+    fun handleListenStart(mode: String = "conversation") {
         _hudState.update { it.copy(isListening = true, asrText = "", asrIsFinal = false) }
         wsClient.resetAudioSeq()
         wsClient.sendAudioStart()
-        audioCapture.start(scope) { base64Pcm ->
+        audioCapture.start(scope, mode) { base64Pcm ->
             val seq = wsClient.nextAudioSeq()
             wsClient.sendAudioChunk(base64Pcm, seq)
         }
@@ -649,7 +649,7 @@ class SuperBrainService : Service() {
                         Log.i(TAG, "Observer mode ON")
                         observerMode = true
                         _hudState.update { it.copy(observerMode = true) }
-                        handleListenStart()
+                        handleListenStart("ambient")
                     }
                     "observer_stop" -> {
                         Log.i(TAG, "Observer mode OFF")
