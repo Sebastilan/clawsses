@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
 
 /**
@@ -30,9 +32,6 @@ class SuperBrainService : Service() {
         private const val TAG = "SuperBrainService"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "superbrain_service"
-
-        // true=照片走OSS直传, false=base64通过WebSocket发送（兜底）
-        const val USE_OSS_PHOTO_UPLOAD = true
 
         // ── 唤醒引擎配置 ──
         // true=讯飞离线唤醒, false=sherpa-onnx KWS
@@ -657,6 +656,9 @@ class SuperBrainService : Service() {
                     }
                     "take_photo" -> {
                         Log.i(TAG, "Photo requested by server")
+                        val payload = event.payload
+                        val putUrl = payload?.get("put_url")?.asString
+                        val ossKey = payload?.get("key")?.asString
                         if (videoRecorder.isRecording) {
                             Log.w(TAG, "Cannot take photo while recording video")
                             addSystemMessage("录像中，无法拍照")
@@ -665,25 +667,31 @@ class SuperBrainService : Service() {
                             try {
                                 wakeScreen()
                                 cameraCapture.capture { file ->
-                                    scope.launch(Dispatchers.Main) {
+                                    scope.launch(Dispatchers.IO) {
                                         if (file == null) {
                                             wsClient.sendPhotoResult(null)
                                             Log.w(TAG, "Photo capture returned null")
                                             return@launch
                                         }
-                                        addSystemMessage("上传照片到OSS...")
-                                        val key = OssUploader.upload(this@SuperBrainService, file)
-                                        if (key != null) {
+                                        if (putUrl.isNullOrBlank() || ossKey.isNullOrBlank()) {
+                                            // 无 presigned URL：live preview 等老路径，走 base64（小图）
+                                            Log.i(TAG, "No put_url → fallback base64 path")
+                                            // 这条路径基本不用（大图会 OOM），保留给 live preview 的小图场景
+                                            wsClient.sendPhotoResult(null)
+                                            return@launch
+                                        }
+                                        // 轻量上传：OkHttp 流式 PUT 到 presigned URL（零 base64，零 SDK）
+                                        val ok = uploadFileToPresignedUrl(file, putUrl)
+                                        if (ok) {
                                             wsClient.sendPhotoUploaded(
-                                                key = key,
-                                                url = OssUploader.ossUrl(key),
+                                                key = ossKey,
+                                                url = null,
                                                 size = file.length(),
                                                 format = "jpeg"
                                             )
-                                            Log.i(TAG, "Photo uploaded to OSS: $key (${file.length()/1024}KB)")
+                                            Log.i(TAG, "Photo uploaded: $ossKey (${file.length()/1024}KB)")
                                         } else {
-                                            // OSS 失败不回退 base64（4MB JPEG 转 base64 OOM）
-                                            Log.e(TAG, "OSS upload failed, no fallback (would OOM)")
+                                            Log.e(TAG, "Photo upload PUT failed")
                                             wsClient.sendPhotoResult(null)
                                         }
                                     }
@@ -905,6 +913,29 @@ class SuperBrainService : Service() {
             Log.i(TAG, "Wake lock acquired")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to acquire wake lock: ${e.message}")
+        }
+    }
+
+    /** 流式 PUT 文件到 presigned URL。无内存压力（OkHttp 从流读文件）。 */
+    private fun uploadFileToPresignedUrl(file: java.io.File, putUrl: String): Boolean {
+        return try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            val mt = "application/octet-stream".toMediaTypeOrNull()
+            val body = file.asRequestBody(mt)
+            val req = okhttp3.Request.Builder().url(putUrl).put(body).build()
+            val t0 = System.currentTimeMillis()
+            client.newCall(req).execute().use { resp ->
+                val ms = System.currentTimeMillis() - t0
+                Log.i(TAG, "OSS PUT ${file.length()/1024}KB → HTTP ${resp.code} in ${ms}ms")
+                resp.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "uploadFileToPresignedUrl failed", e)
+            false
         }
     }
 
