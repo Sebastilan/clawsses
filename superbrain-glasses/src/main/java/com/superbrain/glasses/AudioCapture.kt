@@ -6,6 +6,9 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -33,6 +36,9 @@ class AudioCapture(private val context: Context) {
 
     private var audioRecord: AudioRecord? = null
     private var recordJob: Job? = null
+    private var ns: NoiseSuppressor? = null
+    private var aec: AcousticEchoCanceler? = null
+    private var agc: AutomaticGainControl? = null
 
     /**
      * Start recording and send PCM chunks via onChunk callback.
