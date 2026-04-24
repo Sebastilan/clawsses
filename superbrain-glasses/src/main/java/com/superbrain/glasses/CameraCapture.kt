@@ -184,16 +184,39 @@ class CameraCapture(private val context: Context) {
 
     private fun processCapture(jpegBytes: ByteArray): File? {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmssSSS", Locale.US).format(Date())
-        val outFile = File(context.cacheDir, "photo_$ts.jpg")
+        val outFile = File(context.cacheDir, "photo_$ts.webp")
         return try {
-            // 零 bitmap 方案：直接写 JPEG bytes，不 decode（避免 Rokid lowmemorykiller 150MB 阈值触发）
-            outFile.writeBytes(jpegBytes)
-            // 旋转靠 EXIF tag（OSS 上的看图器/小C Read 后交给 VLM 都能处理 EXIF）
-            val exif = ExifInterface(outFile.absolutePath)
-            exif.setAttribute(ExifInterface.TAG_ORIENTATION, rotationToExifOrientation(SENSOR_ROTATION).toString())
-            exif.saveAttributes()
-            Log.i(TAG, "Photo saved: ${outFile.name} (${jpegBytes.size / 1024}KB, EXIF rot=${SENSOR_ROTATION})")
+            // 降采样 decode：12MP→3MP bitmap，~12MB RAM（Rokid 安全区）
+            val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
+            var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
+                ?: return null
+
+            // 旋转像素使图像正向（EXIF tag 不是所有消费方都解析）
+            if (SENSOR_ROTATION != 0) {
+                val matrix = Matrix().apply { postRotate(SENSOR_ROTATION.toFloat()) }
+                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                if (rotated !== bitmap) bitmap.recycle()
+                bitmap = rotated
+            }
+
+            // WebP q85 压缩：~150-300KB，VLM 识别充足
+            val os = ByteArrayOutputStream()
+            @Suppress("DEPRECATION")
+            val fmt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                Bitmap.CompressFormat.WEBP_LOSSY
+            else
+                Bitmap.CompressFormat.WEBP
+            bitmap.compress(fmt, 85, os)
+            bitmap.recycle()
+
+            val compressed = os.toByteArray()
+            outFile.writeBytes(compressed)
+            Log.i(TAG, "Photo compressed: ${compressed.size / 1024}KB WebP q85 (from ${jpegBytes.size / 1024}KB JPEG)")
             outFile
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "OOM on processCapture", e)
+            outFile.delete()
+            null
         } catch (e: Exception) {
             Log.e(TAG, "Error processing capture", e)
             outFile.delete()
