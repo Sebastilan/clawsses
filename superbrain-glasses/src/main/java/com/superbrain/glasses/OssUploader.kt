@@ -44,10 +44,9 @@ object OssUploader {
         try {
             val ts = SimpleDateFormat("yyyyMMdd/HHmmss_SSS", Locale.US).format(Date())
             val key = "glasses-photos/$ts.jpg"
-            val req = PutObjectRequest(BUCKET, key, file.absolutePath).apply {
-                progressCallback = { _, currentSize, totalSize ->
-                    Log.d(TAG, "Upload ${currentSize * 100 / totalSize}% ($currentSize/$totalSize bytes)")
-                }
+            val req = PutObjectRequest(BUCKET, key, file.absolutePath)
+            req.setProgressCallback { _, currentSize, totalSize ->
+                if (totalSize > 0) Log.d(TAG, "Upload ${currentSize * 100 / totalSize}% ($currentSize/$totalSize)")
             }
             val result = getClient(context).putObject(req)
             Log.i(TAG, "Uploaded $key (${file.length() / 1024}KB) requestId=${result.requestId}")
