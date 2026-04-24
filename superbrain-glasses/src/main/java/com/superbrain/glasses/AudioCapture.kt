@@ -56,11 +56,10 @@ class AudioCapture(private val context: Context) {
             return
         }
 
-        val source = when (mode) {
-            "ambient" -> MediaRecorder.AudioSource.CAMCORDER
-            else -> MediaRecorder.AudioSource.VOICE_RECOGNITION
-        }
-        Log.i(TAG, "AudioRecord mode=$mode source=$source")
+        // Rokid 硬件：VOICE_RECOGNITION 实测收不到音频（疑似 AI 降噪链路问题）
+        // 暂时统一用 CAMCORDER，背景噪声问题改在服务端置信度/时序过滤
+        val source = MediaRecorder.AudioSource.CAMCORDER
+        Log.i(TAG, "AudioRecord mode=$mode source=$source (Rokid forced CAMCORDER)")
 
         try {
             audioRecord = AudioRecord(
