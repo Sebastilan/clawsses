@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,9 +7,9 @@ plugins {
 }
 
 // Load OSS credentials from local.properties (gitignored, never committed)
-val localProps = java.util.Properties().also { p ->
+val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
-    if (f.exists()) f.inputStream().use(p::load)
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
