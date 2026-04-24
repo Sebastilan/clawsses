@@ -5,9 +5,14 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -85,6 +90,32 @@ class MainActivity : ComponentActivity() {
         }
         if (needed.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            val svc = service ?: SuperBrainService.instance
+            val isListening = svc?.hudState?.value?.isListening ?: false
+            if (!isListening) {
+                sendBroadcast(Intent("com.superbrain.glasses.LISTEN_START"))
+                playTone(ToneGenerator.TONE_PROP_BEEP)
+            } else {
+                sendBroadcast(Intent("com.superbrain.glasses.LISTEN_STOP"))
+                playTone(ToneGenerator.TONE_PROP_NACK)
+            }
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    private fun playTone(tone: Int) {
+        try {
+            val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 50)
+            toneGen.startTone(tone, 150)
+            Handler(Looper.getMainLooper()).postDelayed({ toneGen.release() }, 300)
+        } catch (e: Exception) {
+            Log.w(TAG, "Tone play failed: ${e.message}")
         }
     }
 

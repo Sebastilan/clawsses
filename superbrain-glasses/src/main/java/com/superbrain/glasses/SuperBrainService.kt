@@ -33,7 +33,7 @@ class SuperBrainService : Service() {
 
         // ── 唤醒引擎配置 ──
         // true=讯飞离线唤醒, false=sherpa-onnx KWS
-        private const val USE_XUNFEI_WAKE = true
+        private const val USE_XUNFEI_WAKE = false
         private const val XUNFEI_APPID = "3073ec26"
         private const val XUNFEI_API_KEY = "dbbc92d916928c96945173ae36c07983"
         private const val XUNFEI_API_SECRET = "NGE4ZjRjZmNhMDRhYjUyYWU0ZTMzM2Q3"
