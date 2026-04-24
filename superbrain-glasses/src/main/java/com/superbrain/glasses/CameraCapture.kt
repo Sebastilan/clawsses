@@ -1,7 +1,10 @@
 package com.superbrain.glasses
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
+import android.graphics.Matrix
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
@@ -10,6 +13,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Base64
@@ -180,24 +184,40 @@ class CameraCapture(private val context: Context) {
 
     private fun processCapture(jpegBytes: ByteArray): Pair<File, String>? {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmssSSS", Locale.US).format(Date())
-        val outFile = File(context.cacheDir, "photo_$ts.jpg")
+        val outFile = File(context.cacheDir, "photo_$ts.webp")
         return try {
-            // Write raw JPEG bytes (no bitmap decode = zero OOM risk)
-            outFile.writeBytes(jpegBytes)
-            Log.i(TAG, "Wrote ${jpegBytes.size} bytes to ${outFile.name}")
+            // 降采样 decode：12MP→3MP bitmap，~12MB RAM（Rokid 安全区）
+            val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
+            var bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
+                ?: return null
 
-            // Set EXIF orientation tag so viewers rotate correctly
-            val exif = ExifInterface(outFile.absolutePath)
-            val orientation = rotationToExifOrientation(SENSOR_ROTATION)
-            exif.setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
-            exif.saveAttributes()
-            Log.i(TAG, "Set EXIF orientation: $orientation (${SENSOR_ROTATION}°)")
+            // 旋转像素以使图像正向（而不是只写 EXIF tag，后端/小C Read 不解析 EXIF）
+            if (SENSOR_ROTATION != 0) {
+                val matrix = Matrix().apply { postRotate(SENSOR_ROTATION.toFloat()) }
+                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                if (rotated !== bitmap) bitmap.recycle()
+                bitmap = rotated
+            }
 
-            // Read back the EXIF-tagged JPEG for base64 encoding
-            val result = outFile.readBytes()
-            Log.i(TAG, "Photo ready: ${outFile.absolutePath} (${result.size / 1024}KB)")
+            // WebP q85 压缩：~150-300KB，视觉无感差，VLM 识别充足
+            val os = ByteArrayOutputStream()
+            @Suppress("DEPRECATION")
+            val fmt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                Bitmap.CompressFormat.WEBP_LOSSY
+            else
+                Bitmap.CompressFormat.WEBP
+            bitmap.compress(fmt, 85, os)
+            bitmap.recycle()
 
-            Pair(outFile, Base64.encodeToString(result, Base64.NO_WRAP))
+            val compressed = os.toByteArray()
+            outFile.writeBytes(compressed)
+            Log.i(TAG, "Photo compressed: ${compressed.size / 1024}KB WebP q85 (from ${jpegBytes.size / 1024}KB JPEG)")
+
+            Pair(outFile, Base64.encodeToString(compressed, Base64.NO_WRAP))
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "OOM on processCapture", e)
+            outFile.delete()
+            null
         } catch (e: Exception) {
             Log.e(TAG, "Error processing capture", e)
             outFile.delete()
