@@ -84,8 +84,8 @@ class CameraCapture(private val context: Context) {
     }
 
     private fun takePhoto(camera: CameraDevice, onResult: (file: File?) -> Unit) {
-        // Full 12MP sensor resolution — no bitmap decode needed, EXIF handles rotation
-        val reader = ImageReader.newInstance(4032, 3024, ImageFormat.JPEG, 1)
+        // 1920x1440 keeps process under LMK threshold (12MP→decode→48MB bitmap→OOM)
+        val reader = ImageReader.newInstance(1920, 1440, ImageFormat.JPEG, 1)
         imageReader = reader
 
         reader.setOnImageAvailableListener({ r ->
@@ -186,24 +186,13 @@ class CameraCapture(private val context: Context) {
         val ts = SimpleDateFormat("yyyyMMdd_HHmmssSSS", Locale.US).format(Date())
         val outFile = File(context.cacheDir, "photo_$ts.jpg")
         return try {
-            // Decode full-res then re-encode at JPEG q85 (~1.5MB vs 5MB raw)
-            val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
-                ?: return null.also { Log.e(TAG, "decodeByteArray returned null") }
-            val baos = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos)
-            bitmap.recycle()
-            val compressed = baos.toByteArray()
-            outFile.writeBytes(compressed)
-            // Preserve sensor rotation in EXIF (compress drops original EXIF)
+            // Zero-bitmap: write raw JPEG, only patch EXIF rotation tag
+            outFile.writeBytes(jpegBytes)
             val exif = ExifInterface(outFile.absolutePath)
             exif.setAttribute(ExifInterface.TAG_ORIENTATION, rotationToExifOrientation(SENSOR_ROTATION).toString())
             exif.saveAttributes()
-            Log.i(TAG, "Photo saved: ${outFile.name} (${compressed.size / 1024}KB JPEG q85, EXIF rot=${SENSOR_ROTATION})")
+            Log.i(TAG, "Photo saved: ${outFile.name} (${jpegBytes.size / 1024}KB JPEG, EXIF rot=${SENSOR_ROTATION})")
             outFile
-        } catch (e: OutOfMemoryError) {
-            Log.e(TAG, "OOM on processCapture", e)
-            outFile.delete()
-            null
         } catch (e: Exception) {
             Log.e(TAG, "Error processing capture", e)
             outFile.delete()

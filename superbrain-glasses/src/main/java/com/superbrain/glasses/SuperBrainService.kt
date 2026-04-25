@@ -767,7 +767,7 @@ class SuperBrainService : Service() {
                                         mp.setOnCompletionListener {
                                             it.release()
                                             tempFile.delete()
-                                            // Resume ASR after playback
+                                            // 连续对话：TTS 播完恢复 ASR 继续听
                                             if (wasRecording) {
                                                 handleListenStart()
                                                 Log.i(TAG, "ASR resumed after TTS playback")
@@ -787,7 +787,6 @@ class SuperBrainService : Service() {
                                     }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Play audio error: ${e.message}")
-                                    // Must resume ASR if we stopped it
                                     if (wasRecording) {
                                         withContext(Dispatchers.Main) { handleListenStart() }
                                     }
