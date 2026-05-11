@@ -19,6 +19,11 @@ import androidx.activity.compose.setContent
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 
 /**
  * SuperBrain Glasses — HUD Activity.
@@ -39,9 +44,9 @@ class MainActivity : ComponentActivity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             Log.i(TAG, "Bound to SuperBrainService")
             service = (binder as SuperBrainService.LocalBinder).service
-            // Re-set content with real state from Service
+            // Service bound — pure black screen (all feedback via audio)
             setContent {
-                HudScreen(service!!.hudState)
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {}
             }
         }
 
@@ -70,9 +75,9 @@ class MainActivity : ComponentActivity() {
             BIND_AUTO_CREATE
         )
 
-        // Show fallback UI until Service binds
+        // Pure black screen — all feedback via audio
         setContent {
-            HudScreen(fallbackState)
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {}
         }
 
         Log.i(TAG, "MainActivity started, binding to Service")

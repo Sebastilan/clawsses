@@ -365,14 +365,8 @@ class SuperBrainService : Service() {
         // Stop wake word detection, start ASR
         if (useXunfei) xunfeiWakeEngine?.stop() else wakeWordEngine.stop()
 
-        // Play local wake chime (no network, no base64)
-        try {
-            val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 50)
-            toneGen.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ toneGen.release() }, 300)
-        } catch (e: Exception) {
-            Log.w(TAG, "Wake chime failed: ${e.message}")
-        }
+        // Play local wake sound
+        playLocalSound(R.raw.i_am_here)
 
         // Skip auto-photo on wake — camera OOM kills process on 2GB device
         pendingPhoto = null
@@ -575,10 +569,15 @@ class SuperBrainService : Service() {
         }
 
         // Connection state
+        var everConnected = false
         scope.launch {
             wsClient.connected.collect { connected ->
                 _hudState.update { it.copy(isConnected = connected) }
                 updateNotification(if (connected) "Connected" else "Disconnected")
+                if (!connected && everConnected) {
+                    playLocalSound(R.raw.disconnected)
+                }
+                if (connected) everConnected = true
                 // Auto-enable wake word when WS connects and models are ready
                 if (connected && modelsReady && !wakeWordEnabled) {
                     Log.i(TAG, "Connected + models ready → auto-enabling wake word")
@@ -631,6 +630,7 @@ class SuperBrainService : Service() {
                     "sleep" -> {
                         Log.i(TAG, "Sleep command — stopping listen, restarting wake word")
                         observerMode = false
+                        playLocalSoundAndWait(R.raw.bye_bye)
                         handleListenStop()
                         _hudState.update { it.copy(observerMode = false, wakeWordActive = wakeWordEnabled) }
                         if (wakeWordEnabled) {
@@ -1041,6 +1041,32 @@ class SuperBrainService : Service() {
             val nm = getSystemService(NotificationManager::class.java)
             nm.notify(NOTIFICATION_ID, buildNotification(text))
         } catch (_: Exception) {}
+    }
+
+
+    private fun playLocalSound(resId: Int) {
+        try {
+            val mp = android.media.MediaPlayer.create(this, resId) ?: return
+            mp.setOnCompletionListener { it.release() }
+            mp.start()
+        } catch (e: Exception) {
+            Log.w(TAG, "playLocalSound failed")
+        }
+    }
+
+    private suspend fun playLocalSoundAndWait(resId: Int) {
+        val deferred = kotlinx.coroutines.CompletableDeferred<Unit>()
+        try {
+            val mp = android.media.MediaPlayer.create(this, resId)
+            if (mp == null) { deferred.complete(Unit); return }
+            mp.setOnCompletionListener { it.release(); deferred.complete(Unit) }
+            mp.setOnErrorListener { p, _, _ -> p.release(); deferred.complete(Unit); true }
+            mp.start()
+        } catch (e: Exception) {
+            Log.w(TAG, "playLocalSoundAndWait failed")
+            deferred.complete(Unit)
+        }
+        deferred.await()
     }
 
     override fun onDestroy() {
