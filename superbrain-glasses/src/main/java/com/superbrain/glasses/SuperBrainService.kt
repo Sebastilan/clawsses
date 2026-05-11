@@ -896,13 +896,11 @@ class SuperBrainService : Service() {
         }
         audioIsPlaying = true
 
-        // 锁音量到 50% max
+        // 锁 STREAM_VOICE_CALL 和 STREAM_MUSIC 到 100%（VOICE_CALL 不受 BT AVRCP 控制）
         val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-        val targetVol = (max * 1.0).toInt().coerceAtLeast(1)
-        val beforeVol = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
-        if (beforeVol != targetVol) {
-            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetVol, 0)
+        for (stream in listOf(android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.STREAM_MUSIC)) {
+            val max = am.getStreamMaxVolume(stream)
+            if (am.getStreamVolume(stream) != max) am.setStreamVolume(stream, max, 0)
         }
 
         val tempFile = java.io.File.createTempFile("tts_", ".mp3", cacheDir)
@@ -911,8 +909,8 @@ class SuperBrainService : Service() {
         val mp = android.media.MediaPlayer()
         mp.setAudioAttributes(
             android.media.AudioAttributes.Builder()
-                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
         )
         mp.setDataSource(tempFile.absolutePath)
@@ -1047,6 +1045,12 @@ class SuperBrainService : Service() {
     private fun playLocalSound(resId: Int) {
         try {
             val mp = android.media.MediaPlayer.create(this, resId) ?: return
+            mp.setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
             mp.setOnCompletionListener { it.release() }
             mp.start()
         } catch (e: Exception) {
@@ -1059,6 +1063,12 @@ class SuperBrainService : Service() {
         try {
             val mp = android.media.MediaPlayer.create(this, resId)
             if (mp == null) { deferred.complete(Unit); return }
+            mp.setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
             mp.setOnCompletionListener { it.release(); deferred.complete(Unit) }
             mp.setOnErrorListener { p, _, _ -> p.release(); deferred.complete(Unit); true }
             mp.start()
