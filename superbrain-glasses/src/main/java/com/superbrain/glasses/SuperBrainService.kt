@@ -87,6 +87,12 @@ class SuperBrainService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    // TTS 音频队列 — 串行播放多段 mp3，防止重叠
+    private val audioQueue: java.util.concurrent.LinkedBlockingQueue<ByteArray> = java.util.concurrent.LinkedBlockingQueue()
+    private var audioIsPlaying = false
+    private var audioCurrentPlayer: android.media.MediaPlayer? = null
+    private var audioWasRecording = false
+
     // Binder for Activity binding
     inner class LocalBinder : Binder() {
         val service: SuperBrainService get() = this@SuperBrainService
@@ -737,59 +743,21 @@ class SuperBrainService : Service() {
                         val payload = event.payload
                         val data = payload?.get("data")?.asString ?: ""
                         if (data.isNotBlank()) {
-                            Log.i(TAG, "Playing audio: ${data.length} chars base64")
+                            Log.i(TAG, "Queuing audio: ${data.length} chars base64")
                             scope.launch(Dispatchers.IO) {
-                                val wasRecording = audioCapture.isRecording.value
                                 try {
                                     val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
-                                    val fmt = payload?.get("format")?.asString ?: "mp3"
-                                    val ext = if (fmt == "wav") ".wav" else ".mp3"
-                                    val tempFile = java.io.File.createTempFile("tts_", ext, cacheDir)
-                                    tempFile.writeBytes(bytes)
                                     withContext(Dispatchers.Main) {
-                                        // Pause ASR to prevent echo pickup
-                                        if (wasRecording) audioCapture.stop()
-
-                                        // 锁死系统 STREAM_MUSIC 到固定值，避免 TTS 音量随系统音量波动
-                                        // mp.setVolume() 是相对倍数，系统音量被别的事件拉到 max 时会变吵
-                                        val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-                                        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-                                        val targetVol = (max * 0.5).toInt().coerceAtLeast(1)  // 锁到 50% max (约 7/15)
-                                        val beforeVol = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
-                                        if (beforeVol != targetVol) {
-                                            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetVol, 0)
-                                            Log.i(TAG, "TTS volume lock: $beforeVol -> $targetVol (max=$max)")
+                                        audioQueue.offer(bytes)
+                                        if (!audioIsPlaying) {
+                                            // 第一段：记录 ASR 状态并暂停
+                                            audioWasRecording = audioCapture.isRecording.value
+                                            if (audioWasRecording) audioCapture.stop()
+                                            playNextFromQueue()
                                         }
-
-                                        val mp = android.media.MediaPlayer()
-                                        mp.setAudioStreamType(android.media.AudioManager.STREAM_MUSIC)
-                                        mp.setDataSource(tempFile.absolutePath)
-                                        mp.setOnCompletionListener {
-                                            it.release()
-                                            tempFile.delete()
-                                            // 连续对话：TTS 播完恢复 ASR 继续听
-                                            if (wasRecording) {
-                                                handleListenStart()
-                                                Log.i(TAG, "ASR resumed after TTS playback")
-                                            }
-                                        }
-                                        mp.setOnErrorListener { _, what, extra ->
-                                            Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
-                                            mp.release()
-                                            tempFile.delete()
-                                            if (wasRecording) handleListenStart()
-                                            true
-                                        }
-                                        mp.prepare()
-                                        mp.setVolume(1.0f, 1.0f)  // 相对音量用 1.0，实际音量由系统 STREAM_MUSIC（已锁 50% max）决定
-                                        mp.start()
-                                        Log.i(TAG, "MediaPlayer started, ASR paused")
                                     }
                                 } catch (e: Exception) {
-                                    Log.e(TAG, "Play audio error: ${e.message}")
-                                    if (wasRecording) {
-                                        withContext(Dispatchers.Main) { handleListenStart() }
-                                    }
+                                    Log.e(TAG, "Play audio decode error: ${e.message}")
                                 }
                             }
                         }
@@ -915,7 +883,59 @@ class SuperBrainService : Service() {
         }
     }
 
-    /** 流式 PUT 文件到 presigned URL。无内存压力（OkHttp 从流读文件）。 */
+    /** TTS 队列化串行播放：从 audioQueue 取下一段，播完后递归取下一段。 */
+    private fun playNextFromQueue() {
+        val bytes = audioQueue.poll()
+        if (bytes == null) {
+            audioIsPlaying = false
+            if (audioWasRecording) {
+                handleListenStart()
+                Log.i(TAG, "ASR resumed — TTS queue empty")
+            }
+            return
+        }
+        audioIsPlaying = true
+
+        // 锁音量到 50% max
+        val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+        val targetVol = (max * 0.5).toInt().coerceAtLeast(1)
+        val beforeVol = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+        if (beforeVol != targetVol) {
+            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetVol, 0)
+        }
+
+        val tempFile = java.io.File.createTempFile("tts_", ".mp3", cacheDir)
+        tempFile.writeBytes(bytes)
+
+        val mp = android.media.MediaPlayer()
+        mp.setAudioStreamType(android.media.AudioManager.STREAM_MUSIC)
+        mp.setDataSource(tempFile.absolutePath)
+        mp.setOnCompletionListener {
+            it.release()
+            tempFile.delete()
+            audioCurrentPlayer = null
+            Log.i(TAG, "TTS segment done, queue=${audioQueue.size} remaining")
+            playNextFromQueue()  // 播下一段
+        }
+        mp.setOnErrorListener { p, what, extra ->
+            Log.e(TAG, "MediaPlayer error what=$what extra=$extra")
+            p.release()
+            tempFile.delete()
+            audioCurrentPlayer = null
+            playNextFromQueue()  // 出错也继续队列
+            true
+        }
+        mp.setOnPreparedListener { p ->
+            p.setVolume(1.0f, 1.0f)
+            p.start()
+            Log.i(TAG, "TTS segment started, queue=${audioQueue.size} remaining")
+        }
+        mp.prepareAsync()
+        audioCurrentPlayer = mp
+    }
+
+        /** 流式 PUT 文件到 presigned URL。无内存压力（OkHttp 从流读文件）。 */
     private fun uploadFileToPresignedUrl(file: java.io.File, putUrl: String): Boolean {
         return try {
             val client = okhttp3.OkHttpClient.Builder()
@@ -1032,6 +1052,12 @@ class SuperBrainService : Service() {
         ttsPlayer.cleanup()
         otaUpdater.cleanup()
         wifiController.cleanup()
+        // 清空 TTS 音频队列
+        audioQueue.clear()
+        audioCurrentPlayer?.release()
+        audioCurrentPlayer = null
+        audioIsPlaying = false
+
         scope.cancel()
     }
 }
