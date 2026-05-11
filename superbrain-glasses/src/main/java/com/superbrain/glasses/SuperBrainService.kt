@@ -899,7 +899,7 @@ class SuperBrainService : Service() {
         // 锁音量到 50% max
         val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
         val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL)
-        val targetVol = (max * 0.9).toInt().coerceAtLeast(1)
+        val targetVol = (max * 1.0).toInt().coerceAtLeast(1)
         val beforeVol = am.getStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL)
         if (beforeVol != targetVol) {
             am.setStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL, targetVol, 0)
@@ -941,13 +941,30 @@ class SuperBrainService : Service() {
     }
 
         /** 流式 PUT 文件到 presigned URL。无内存压力（OkHttp 从流读文件）。 */
+    private fun buildTrustAllHttpClient(): okhttp3.OkHttpClient {
+        // Glasses system clock is often wrong (NTP fails), causing TLS cert
+        // validation to fail. Trust all certs for OSS uploads on this device.
+        val trustAll = arrayOf<javax.net.ssl.TrustManager>(
+            object : javax.net.ssl.X509TrustManager {
+                override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+                override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+                override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+            }
+        )
+        val sslCtx = javax.net.ssl.SSLContext.getInstance("TLS")
+        sslCtx.init(null, trustAll, java.security.SecureRandom())
+        return okhttp3.OkHttpClient.Builder()
+            .sslSocketFactory(sslCtx.socketFactory, trustAll[0] as javax.net.ssl.X509TrustManager)
+            .hostnameVerifier { _, _ -> true }
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     private fun uploadFileToPresignedUrl(file: java.io.File, putUrl: String): Boolean {
         return try {
-            val client = okhttp3.OkHttpClient.Builder()
-                .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-                .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
+            val client = buildTrustAllHttpClient()
             val mt = "application/octet-stream".toMediaTypeOrNull()
             val body = file.asRequestBody(mt)
             val req = okhttp3.Request.Builder().url(putUrl).put(body).build()
