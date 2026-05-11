@@ -898,18 +898,23 @@ class SuperBrainService : Service() {
 
         // 锁音量到 50% max
         val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-        val targetVol = (max * 0.5).toInt().coerceAtLeast(1)
-        val beforeVol = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+        val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL)
+        val targetVol = (max * 0.7).toInt().coerceAtLeast(1)
+        val beforeVol = am.getStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL)
         if (beforeVol != targetVol) {
-            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetVol, 0)
+            am.setStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL, targetVol, 0)
         }
 
         val tempFile = java.io.File.createTempFile("tts_", ".mp3", cacheDir)
         tempFile.writeBytes(bytes)
 
         val mp = android.media.MediaPlayer()
-        mp.setAudioStreamType(android.media.AudioManager.STREAM_MUSIC)
+        mp.setAudioAttributes(
+            android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+        )
         mp.setDataSource(tempFile.absolutePath)
         mp.setOnCompletionListener {
             it.release()
