@@ -70,9 +70,5 @@ dependencies {
 
     implementation("androidx.exifinterface:exifinterface:1.3.7")
 
-    // Sherpa-onnx (KWS + Speaker Verification) local AAR from GitHub Releases
-    implementation(files("libs/sherpa-onnx-1.12.34.aar"))
 
-    // 讯飞 AIKit 离线唤醒SDK
-    implementation(files("libs/AIKit.aar"))
 }

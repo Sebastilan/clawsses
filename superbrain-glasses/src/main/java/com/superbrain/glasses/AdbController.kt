@@ -60,20 +60,7 @@ class AdbController : BroadcastReceiver() {
                 if (ssid.isNotBlank()) service.handleWifi(ssid, password)
             }
             "WIFI_STATUS" -> service.handleWifiStatus()
-            "WAKE_ENABLE" -> service.handleWakeEnable()
-            "WAKE_DISABLE" -> service.handleWakeDisable()
-            "ENROLL_START" -> service.handleEnrollStart()
-            "ENROLL_CLEAR" -> service.handleEnrollClear()
-            "BROWSER" -> {
-                val url = intent.getStringExtra("url") ?: ""
-                if (url.isNotBlank()) {
-                    val webIntent = Intent(context, WebViewActivity::class.java).apply {
-                        putExtra("url", url)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(webIntent)
-                }
-            }
+
             else -> Log.w(TAG, "Unknown command: $command")
         }
     }
