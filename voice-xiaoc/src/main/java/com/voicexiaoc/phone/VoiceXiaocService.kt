@@ -36,7 +36,7 @@ class VoiceXiaocService : Service() {
         private const val CHANNEL_ID = "voicexiaoc"
         private const val NOTIF_ID = 1
         private const val ACTION_INSTALL_STATUS = "com.voicexiaoc.phone.INSTALL_STATUS"
-        private const val WAKE_WORD = "小c" // matched case-insensitively against ASR finals
+        private const val WAKE_WORD = "健康顺利" // local sherpa-onnx KWS keyword, see assets/kws-model/keywords.txt
         private const val WAKE_ARM_TIMEOUT_MS = 8000L  // armed but said nothing at all yet
         private const val ARM_SILENCE_MS = 2500L       // armed, said something, now paused — submit
 
@@ -67,6 +67,7 @@ class VoiceXiaocService : Service() {
     lateinit var ota: OtaUpdater; private set
     lateinit var versionChecker: VersionChecker; private set
     lateinit var audio: AudioCapture; private set
+    lateinit var kws: KwsDetector; private set
 
     // Last reply text surfaced to the UI.
     private val _lastReply = MutableStateFlow("")
@@ -85,6 +86,7 @@ class VoiceXiaocService : Service() {
     private var wakeArmTimeout: Job? = null  // "said nothing yet" timeout — falls back to passive listening
     private var armSilenceSubmit: Job? = null // "stopped talking" debounce — submits the accumulated command
     private var wakeSessionActive = false
+    private var kwsListening = false         // local KWS mic loop is active (mutually exclusive with command capture)
 
     override fun onCreate() {
         super.onCreate()
@@ -94,6 +96,7 @@ class VoiceXiaocService : Service() {
         config = ConfigStore(this)
         tts = TtsPlayer(this)
         audio = AudioCapture(this)
+        kws = KwsDetector(this)
         ws = WsClient(scope).apply {
             host = config.host
             port = config.port
@@ -128,7 +131,11 @@ class VoiceXiaocService : Service() {
                 // wake-listening.
                 scope.launch {
                     kotlinx.coroutines.delay(800)
-                    if (wakeSessionActive && !wakeArmed) arm(chime = false)
+                    if (wakeSessionActive && !wakeArmed) {
+                        stopLocalKwsListening()
+                        startCommandCapture()
+                        arm(chime = false)
+                    }
                 }
             }
         }
@@ -186,10 +193,12 @@ class VoiceXiaocService : Service() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
         wakeSessionActive = false
+        kwsListening = false
         wakeArmTimeout?.cancel()
         finishGuard?.cancel()
         audio.cleanup()
         asr?.cancel(); asr = null
+        kws.release()
         ws.disconnect()
         tts.cleanup()
         wakeLock?.let { if (it.isHeld) it.release() }
@@ -216,6 +225,8 @@ class VoiceXiaocService : Service() {
         if (wakeSessionActive) {
             if (!wakeArmed) {
                 ws.sendLog("info", "VoiceService", "manual tap force-arm")
+                stopLocalKwsListening()
+                startCommandCapture()
                 arm()
             } else {
                 submitArmedCommand()
@@ -226,18 +237,56 @@ class VoiceXiaocService : Service() {
     }
 
     /**
-     * P3: continuous always-on ASR session. Runs from onCreate until the
-     * service dies, auto-restarting on completion/error (Tencent sessions
-     * have a max duration/idle timeout). Passively streams mic audio; final
-     * transcripts are scanned for the wake word via [handleWakeFinal].
+     * P3 (local wake, 2026-08): mic feeds a local sherpa-onnx KWS spotter
+     * continuously — zero network calls until a hit. This is the standard
+     * two-stage architecture (local always-on keyword spotting → cloud ASR
+     * only after wake), ported from lgp-tv's hun-voice (same model, same
+     * "健康顺利" keyword). Replaces the old approach of running continuous
+     * cloud ASR and string-matching every final for the wake word.
      */
     private fun startWakeSession() {
-        if (asr != null) return
+        if (wakeSessionActive) return
         wakeSessionActive = true
         wakeArmed = false
         finals.setLength(0)
         _voiceState.value = VoiceState.WakeListening
+        startLocalKwsListening()
+    }
 
+    /** Local, offline wake-word spotting loop. Mutually exclusive with command capture — only one mic consumer at a time. */
+    private fun startLocalKwsListening() {
+        if (kwsListening || wakeArmed || asr != null) return
+        kwsListening = true
+        audio.startPcm(scope) { pcm ->
+            val hit = kws.feed(pcm)
+            if (hit != null) {
+                ws.sendLog("info", "KwsDetector", "local wake hit: $hit")
+                stopLocalKwsListening()
+                scope.launch { onWakeDetected() }
+            }
+        }
+    }
+
+    private fun stopLocalKwsListening() {
+        if (!kwsListening) return
+        kwsListening = false
+        audio.stop()
+    }
+
+    /** Local KWS fired — open a cloud ASR session dedicated to capturing the command that follows. */
+    private fun onWakeDetected() {
+        startCommandCapture()
+        arm()
+    }
+
+    /**
+     * Open a Tencent ASR session purely for command capture (wake word already
+     * confirmed locally, so every final here is real command content — no more
+     * text-matching against WAKE_WORD). Closes itself once [submitArmedCommand]
+     * fires; the caller restarts local KWS listening afterwards.
+     */
+    private fun startCommandCapture() {
+        if (asr != null) return
         val client = TencentAsrClient(
             secretId = config.asrSecretId,
             secretKey = config.asrSecretKey,
@@ -248,35 +297,32 @@ class VoiceXiaocService : Service() {
         asr = client
         client.start(object : TencentAsrClient.Listener {
             override fun onReady() {
-                ws.sendLog("info", "TencentAsr", "wake session ready — streaming mic PCM")
-                audio.startPcm(scope) { pcm -> client.sendPcm(pcm) }
+                ws.sendLog("info", "TencentAsr", "command capture ready — streaming mic PCM")
+                resumeMicIfNeeded()
             }
             override fun onPartial(text: String) {
-                if (wakeArmed) {
-                    _voiceState.value = VoiceState.Recognizing(finals.toString() + text)
-                    if (text.isNotBlank()) pushSilenceSubmit() // still talking — postpone the submit
-                }
+                _voiceState.value = VoiceState.Recognizing(finals.toString() + text)
+                if (text.isNotBlank()) pushSilenceSubmit() // still talking — postpone the submit
             }
             override fun onFinal(text: String) {
-                ws.sendLog("info", "TencentAsr", "wake session final: $text")
-                handleWakeFinal(text)
+                ws.sendLog("info", "TencentAsr", "command final: $text")
+                finals.append(text)
+                pushSilenceSubmit()
             }
             override fun onCompleted() {
-                ws.sendLog("info", "TencentAsr", "wake session completed")
+                ws.sendLog("info", "TencentAsr", "command capture completed")
                 audio.stop()
                 asr = null
                 if (wakeArmed) submitArmedCommand()
-                if (wakeSessionActive) scope.launch {
-                    kotlinx.coroutines.delay(300)
-                    startWakeSession()
-                }
+                else if (wakeSessionActive) startLocalKwsListening()
             }
             override fun onError(msg: String) {
-                ws.sendLog("error", "TencentAsr", "wake session error: $msg")
+                ws.sendLog("error", "TencentAsr", "command capture error: $msg")
                 audio.stop()
                 asr = null
+                wakeArmed = false
                 if (wakeSessionActive) {
-                    scope.launch { kotlinx.coroutines.delay(1500); startWakeSession() }
+                    scope.launch { kotlinx.coroutines.delay(1500); startLocalKwsListening() }
                 } else {
                     _voiceState.value = VoiceState.Error(msg)
                 }
@@ -284,53 +330,21 @@ class VoiceXiaocService : Service() {
         })
     }
 
-    /**
-     * Scan a finalized ASR sentence for the wake word; arm on hit, or append to
-     * the in-progress command if already armed. Armed final segments do NOT
-     * submit immediately — a single final is often just one clause of a longer
-     * sentence (Tencent emits finals at VAD pause boundaries, not necessarily
-     * full-sentence boundaries). Instead every armed final/partial pushes out a
-     * short silence-debounce; submit only fires once the user actually stops
-     * talking for [ARM_SILENCE_MS].
-     */
-    private fun handleWakeFinal(text: String) {
-        if (!wakeArmed) {
-            val idx = text.indexOf(WAKE_WORD, ignoreCase = true)
-            if (idx < 0) return // not the wake word — stay passively listening
-            val rest = text.substring(idx + WAKE_WORD.length).trim()
-            arm()
-            // Trailing punctuation left over from the same ASR final as the wake
-            // word itself (e.g. "小C。") must NOT count as the start of a real
-            // command — it used to get appended+submitted as-is after the
-            // silence debounce, disarming before the user's actual follow-up
-            // question ever arrived (observed bug: wake fires, then only "。"
-            // reaches the gateway and gets skipped as junk, app looks "silent").
-            if (!isJunkFragment(rest)) {
-                finals.append(rest)
-                pushSilenceSubmit()
-            }
-        } else {
-            finals.append(text)
-            pushSilenceSubmit()
-        }
-    }
-
-    /** Mirrors the gateway's server-side junk filter: punctuation/whitespace-only text isn't real content. */
-    private fun isJunkFragment(text: String): Boolean =
-        text.replace(Regex("[，,。.!?！？…\\s]"), "").length < 2
-
-    /** Re-open the mic if the wake session is alive but paused for TTS playback. */
+    /** Re-open the mic if a command-capture session (or local KWS) is alive but paused (e.g. for TTS playback). */
     private fun resumeMicIfNeeded() {
-        if (asr != null && !audio.isRecording.value) {
-            val client = asr ?: return
+        if (audio.isRecording.value) return
+        val client = asr
+        if (client != null) {
             audio.startPcm(scope) { pcm -> client.sendPcm(pcm) }
+        } else if (wakeSessionActive && !wakeArmed) {
+            startLocalKwsListening()
         }
     }
 
     /** Enter "armed" state: wake heard (or a follow-up window), capturing the next command. */
     private fun arm(chime: Boolean = true) {
         if (chime) {
-            ws.sendWake("小C", 1.0)
+            ws.sendWake(WAKE_WORD, 1.0)
             tts.stop()
             // Instant "我在" ack so the user knows the wake registered without
             // waiting on a full CC round-trip — a bundled pre-synthesized Doubao
@@ -352,9 +366,12 @@ class VoiceXiaocService : Service() {
         wakeArmTimeout = scope.launch {
             kotlinx.coroutines.delay(WAKE_ARM_TIMEOUT_MS)
             if (wakeArmed && finals.isEmpty()) {
-                ws.sendLog("info", "VoiceService", "wake arm timed out (nothing said), back to passive listening")
+                ws.sendLog("info", "VoiceService", "wake arm timed out (nothing said), back to local KWS listening")
                 wakeArmed = false
+                audio.stop()
+                asr?.cancel(); asr = null
                 _voiceState.value = VoiceState.WakeListening
+                if (wakeSessionActive) startLocalKwsListening()
             }
         }
     }
@@ -369,21 +386,25 @@ class VoiceXiaocService : Service() {
         }
     }
 
-    /** Send the accumulated command text (since arming) to the gateway and disarm. */
+    /** Send the accumulated command text (since arming) to the gateway, disarm, and go back to local KWS listening. */
     private fun submitArmedCommand() {
         wakeArmTimeout?.cancel(); wakeArmTimeout = null
         armSilenceSubmit?.cancel(); armSilenceSubmit = null
         val text = finals.toString().trim()
         finals.setLength(0)
         wakeArmed = false
+        audio.stop()
+        asr?.cancel(); asr = null
         if (text.isBlank()) {
             _voiceState.value = VoiceState.WakeListening
+            if (wakeSessionActive) startLocalKwsListening()
             return
         }
         ws.sendLog("info", "VoiceService", "wake command -> gateway: $text")
         _voiceState.value = VoiceState.Sent(text)
         _lastReply.value = ""
         ws.sendAsrText(text)
+        if (wakeSessionActive) startLocalKwsListening()
     }
 
     /**
