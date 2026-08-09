@@ -37,7 +37,8 @@ class VoiceXiaocService : Service() {
         private const val NOTIF_ID = 1
         private const val ACTION_INSTALL_STATUS = "com.voicexiaoc.phone.INSTALL_STATUS"
         private const val WAKE_WORD = "小c" // matched case-insensitively against ASR finals
-        private const val WAKE_ARM_TIMEOUT_MS = 8000L
+        private const val WAKE_ARM_TIMEOUT_MS = 8000L  // armed but said nothing at all yet
+        private const val ARM_SILENCE_MS = 2500L       // armed, said something, now paused — submit
 
         @Volatile var instance: VoiceXiaocService? = null
             private set
@@ -82,7 +83,8 @@ class VoiceXiaocService : Service() {
 
     // Wake-word (P3): continuous ASR session state.
     private var wakeArmed = false            // true = wake word heard, capturing the command sentence
-    private var wakeArmTimeout: Job? = null
+    private var wakeArmTimeout: Job? = null  // "said nothing yet" timeout — falls back to passive listening
+    private var armSilenceSubmit: Job? = null // "stopped talking" debounce — submits the accumulated command
     private var wakeSessionActive = false
 
     override fun onCreate() {
@@ -122,16 +124,16 @@ class VoiceXiaocService : Service() {
                 _voiceState.value = VoiceState.Reply(r.text)
                 val myGen = ++ttsAudioGen
                 scope.launch {
-                    kotlinx.coroutines.delay(2500)
+                    kotlinx.coroutines.delay(4000)
                     if (ttsAudioGen == myGen) tts.speak(r.text) // no tts_audio arrived — fall back
                 }
-                // After the reply has had time to be heard, drop back to passive
-                // wake-listening so the mic keeps waiting for the next "小C".
+                // Follow-up window: re-arm silently (no wake word needed) so the
+                // user can keep talking right after hearing the answer. If they
+                // don't say anything, arm()'s own timeout drops back to passive
+                // wake-listening.
                 scope.launch {
-                    kotlinx.coroutines.delay(6000)
-                    if (_voiceState.value is VoiceState.Reply && wakeSessionActive && !wakeArmed) {
-                        _voiceState.value = VoiceState.WakeListening
-                    }
+                    kotlinx.coroutines.delay(800)
+                    if (wakeSessionActive && !wakeArmed) arm(chime = false)
                 }
             }
         }
@@ -245,7 +247,10 @@ class VoiceXiaocService : Service() {
                 audio.startPcm(scope) { pcm -> client.sendPcm(pcm) }
             }
             override fun onPartial(text: String) {
-                if (wakeArmed) _voiceState.value = VoiceState.Recognizing(finals.toString() + text)
+                if (wakeArmed) {
+                    _voiceState.value = VoiceState.Recognizing(finals.toString() + text)
+                    if (text.isNotBlank()) pushSilenceSubmit() // still talking — postpone the submit
+                }
             }
             override fun onFinal(text: String) {
                 ws.sendLog("info", "TencentAsr", "wake session final: $text")
@@ -274,7 +279,15 @@ class VoiceXiaocService : Service() {
         })
     }
 
-    /** Scan a finalized ASR sentence for the wake word; arm on hit, or append if already armed. */
+    /**
+     * Scan a finalized ASR sentence for the wake word; arm on hit, or append to
+     * the in-progress command if already armed. Armed final segments do NOT
+     * submit immediately — a single final is often just one clause of a longer
+     * sentence (Tencent emits finals at VAD pause boundaries, not necessarily
+     * full-sentence boundaries). Instead every armed final/partial pushes out a
+     * short silence-debounce; submit only fires once the user actually stops
+     * talking for [ARM_SILENCE_MS].
+     */
     private fun handleWakeFinal(text: String) {
         if (!wakeArmed) {
             val idx = text.indexOf(WAKE_WORD, ignoreCase = true)
@@ -283,36 +296,49 @@ class VoiceXiaocService : Service() {
             arm()
             if (rest.isNotBlank()) {
                 finals.append(rest)
-                submitArmedCommand()
+                pushSilenceSubmit()
             }
         } else {
             finals.append(text)
-            submitArmedCommand()
+            pushSilenceSubmit()
         }
     }
 
-    /** Enter "armed" state: wake heard, capturing the next command sentence. */
-    private fun arm() {
-        ws.sendWake("小C", 1.0)
-        tts.stop()
+    /** Enter "armed" state: wake heard (or a follow-up window), capturing the next command. */
+    private fun arm(chime: Boolean = true) {
+        if (chime) {
+            ws.sendWake("小C", 1.0)
+            tts.stop()
+        }
         finals.setLength(0)
         wakeArmed = true
         _voiceState.value = VoiceState.Listening
+        armSilenceSubmit?.cancel(); armSilenceSubmit = null
         wakeArmTimeout?.cancel()
         wakeArmTimeout = scope.launch {
             kotlinx.coroutines.delay(WAKE_ARM_TIMEOUT_MS)
-            if (wakeArmed) {
-                ws.sendLog("info", "VoiceService", "wake arm timed out, back to passive listening")
+            if (wakeArmed && finals.isEmpty()) {
+                ws.sendLog("info", "VoiceService", "wake arm timed out (nothing said), back to passive listening")
                 wakeArmed = false
-                finals.setLength(0)
                 _voiceState.value = VoiceState.WakeListening
             }
+        }
+    }
+
+    /** (Re)start the "user stopped talking" debounce that triggers [submitArmedCommand]. */
+    private fun pushSilenceSubmit() {
+        wakeArmTimeout?.cancel() // they've started talking — the "said nothing" timeout no longer applies
+        armSilenceSubmit?.cancel()
+        armSilenceSubmit = scope.launch {
+            kotlinx.coroutines.delay(ARM_SILENCE_MS)
+            submitArmedCommand()
         }
     }
 
     /** Send the accumulated command text (since arming) to the gateway and disarm. */
     private fun submitArmedCommand() {
         wakeArmTimeout?.cancel(); wakeArmTimeout = null
+        armSilenceSubmit?.cancel(); armSilenceSubmit = null
         val text = finals.toString().trim()
         finals.setLength(0)
         wakeArmed = false

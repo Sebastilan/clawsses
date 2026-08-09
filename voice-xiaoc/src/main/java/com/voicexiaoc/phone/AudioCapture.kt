@@ -22,11 +22,13 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * Ported from superbrain-glasses/AudioCapture.kt. Unlike the Rokid build (which
  * was forced to CAMCORDER due to a hardware AI-denoise quirk), the phone uses
- * VOICE_RECOGNITION with hardware NS/AEC/AGC — the right source for near-field
- * speech on standard Android phones.
+ * MIC with hardware NS/AEC/AGC attached via the audio session.
  *
- * NOTE: This is wired but not started in P1c (no wake-word / streaming ASR yet).
- * It exists so the later voice pipeline can drop straight in.
+ * P3 note: deliberately AudioSource.MIC, not VOICE_RECOGNITION — the always-on
+ * wake session holds the mic continuously, and VOICE_RECOGNITION is treated as
+ * an exclusive-priority source on most OEMs (it will silently starve other
+ * apps' voice input, e.g. the system voice keyboard, of mic access for as long
+ * as this service runs). MIC allows concurrent capture.
  */
 class AudioCapture(private val context: Context) {
 
@@ -85,7 +87,7 @@ class AudioCapture(private val context: Context) {
 
         try {
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC,
                 SAMPLE_RATE, CHANNEL, ENCODING,
                 bufferSize * 2
             )
