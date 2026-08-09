@@ -101,6 +101,7 @@ class VoiceXiaocService : Service() {
             deviceId = "phone-${Build.MODEL}".replace(" ", "_")
         }
         audio.onLog = { level, msg -> ws.sendLog(level, "AudioCapture", msg) }
+        tts.onLog = { level, msg -> ws.sendLog(level, "TtsPlayer", msg) }
         installCrashReporter()
         ota = OtaUpdater(this, scope)
         val localCode = try {

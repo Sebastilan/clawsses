@@ -1,7 +1,11 @@
 package com.voicexiaoc.phone
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.util.Base64
 import android.util.Log
@@ -26,9 +30,52 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
     private val tts = TextToSpeech(context, this)
     private var ready = false
     private var mediaPlayer: MediaPlayer? = null
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var focusRequest: AudioFocusRequest? = null
 
     /** When true, `text_reply` is spoken via on-device TTS. */
     var enabled = true
+
+    /**
+     * Forwarded to VoiceXiaocService -> ws.sendLog, since Android's own Log.*
+     * is invisible once the phone is out on the road — this is the only way
+     * to diagnose "TTS silently didn't play" reports after the fact (e.g.
+     * audio focus denied by a car head unit, output routed to an unexpected
+     * device, media volume at 0).
+     */
+    var onLog: ((level: String, msg: String) -> Unit)? = null
+
+    private val playbackAttrs = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+
+    /** Request transient audio focus so playback isn't silently dropped by whatever else owns the output (car head unit, nav app, etc). */
+    private fun requestFocus(): Boolean {
+        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(playbackAttrs)
+                .build()
+            focusRequest = req
+            audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }
+        val vol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        onLog?.invoke(if (granted) "info" else "warn", "audio focus granted=$granted musicVol=$vol/$maxVol")
+        return granted
+    }
+
+    private fun abandonFocus() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
+        }
+    }
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
@@ -66,19 +113,21 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
             val file = File(context.cacheDir, "vx-tts.$format")
             FileOutputStream(file).use { it.write(bytes) }
             stop()
+            requestFocus()
             mediaPlayer = MediaPlayer().apply {
+                setAudioAttributes(playbackAttrs)
                 setDataSource(file.absolutePath)
-                setOnCompletionListener { mp -> mp.release(); if (mediaPlayer === mp) mediaPlayer = null; onDone?.invoke() }
+                setOnCompletionListener { mp -> abandonFocus(); mp.release(); if (mediaPlayer === mp) mediaPlayer = null; onLog?.invoke("info", "tts playback completed"); onDone?.invoke() }
                 setOnErrorListener { mp, what, extra ->
-                    Log.e(TAG, "MediaPlayer error what=$what extra=$extra")
-                    mp.release(); if (mediaPlayer === mp) mediaPlayer = null; onDone?.invoke(); true
+                    onLog?.invoke("error", "MediaPlayer error what=$what extra=$extra")
+                    abandonFocus(); mp.release(); if (mediaPlayer === mp) mediaPlayer = null; onDone?.invoke(); true
                 }
                 prepare()
                 start()
             }
-            Log.i(TAG, "Playing ${bytes.size}B $format audio")
+            onLog?.invoke("info", "playing ${bytes.size}B $format audio")
         } catch (e: Exception) {
-            Log.e(TAG, "playBase64 failed: ${e.message}")
+            onLog?.invoke("error", "playBase64 failed: ${e.message}")
             onDone?.invoke()
         }
     }
@@ -92,21 +141,24 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
     fun playRaw(resId: Int, onDone: (() -> Unit)? = null) {
         try {
             stop()
-            val mp = MediaPlayer.create(context, resId)
+            requestFocus()
+            val mp = MediaPlayer.create(context, resId, playbackAttrs, audioManager.generateAudioSessionId())
             if (mp == null) {
+                abandonFocus()
                 onDone?.invoke()
                 return
             }
             mediaPlayer = mp.apply {
-                setOnCompletionListener { p -> p.release(); if (mediaPlayer === p) mediaPlayer = null; onDone?.invoke() }
+                setOnCompletionListener { p -> abandonFocus(); p.release(); if (mediaPlayer === p) mediaPlayer = null; onLog?.invoke("info", "wake ack playback completed"); onDone?.invoke() }
                 setOnErrorListener { p, what, extra ->
-                    Log.e(TAG, "MediaPlayer(raw) error what=$what extra=$extra")
-                    p.release(); if (mediaPlayer === p) mediaPlayer = null; onDone?.invoke(); true
+                    onLog?.invoke("error", "MediaPlayer(raw) error what=$what extra=$extra")
+                    abandonFocus(); p.release(); if (mediaPlayer === p) mediaPlayer = null; onDone?.invoke(); true
                 }
                 start()
             }
+            onLog?.invoke("info", "playing wake ack clip")
         } catch (e: Exception) {
-            Log.e(TAG, "playRaw failed: ${e.message}")
+            onLog?.invoke("error", "playRaw failed: ${e.message}")
             onDone?.invoke()
         }
     }
@@ -115,6 +167,7 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
         tts.stop()
         try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
         mediaPlayer = null
+        abandonFocus()
     }
 
     fun cleanup() {
