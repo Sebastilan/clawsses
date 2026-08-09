@@ -1,0 +1,156 @@
+package com.voicexiaoc.phone
+
+import android.Manifest
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.os.IBinder
+import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.flow.MutableStateFlow
+
+/**
+ * Minimal status screen: shows gateway connection state + current version +
+ * OTA self-check status. All heavy lifting lives in VoiceXiaocService.
+ */
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "MainActivity"
+        private const val PERMISSION_REQUEST_CODE = 100
+    }
+
+    private val serviceState = MutableStateFlow<VoiceXiaocService?>(null)
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            serviceState.value = (binder as VoiceXiaocService.LocalBinder).service
+            Log.i(TAG, "bound to service")
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            serviceState.value = null
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        requestPermissionsIfNeeded()
+
+        VoiceXiaocService.start(this)
+        bindService(Intent(this, VoiceXiaocService::class.java), connection, BIND_AUTO_CREATE)
+
+        val versionName = appVersionName()
+        val versionCode = appVersionCode()
+
+        setContent {
+            MaterialTheme {
+                val svc by serviceState.collectAsState()
+                StatusScreen(svc, versionName, versionCode)
+            }
+        }
+    }
+
+    private fun requestPermissionsIfNeeded() {
+        val needed = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) needed.add(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED) needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        if (needed.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
+        }
+    }
+
+    private fun appVersionName(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: Exception) { "?" }
+
+    private fun appVersionCode(): Int = try {
+        packageManager.getPackageInfo(packageName, 0).let {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) it.longVersionCode.toInt()
+            else @Suppress("DEPRECATION") it.versionCode
+        }
+    } catch (e: Exception) { -1 }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try { unbindService(connection) } catch (_: Exception) {}
+    }
+}
+
+@Composable
+private fun StatusScreen(svc: VoiceXiaocService?, versionName: String, versionCode: Int) {
+    val connected by (svc?.ws?.connected ?: MutableStateFlow(false)).collectAsState()
+    val status by (svc?.ws?.status ?: MutableStateFlow("Starting…")).collectAsState()
+    val otaState by (svc?.versionChecker?.state ?: MutableStateFlow(VersionChecker.State.Idle))
+        .collectAsState(initial = VersionChecker.State.Idle)
+    val lastReply by (svc?.lastReply ?: MutableStateFlow("")).collectAsState()
+
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0B0B0F)) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(28.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Text("语音小C", color = Color(0xFF7CFF9B), fontSize = 30.sp,
+                fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(modifier = Modifier.size(14.dp).clip(CircleShape)
+                    .background(if (connected) Color(0xFF37E06B) else Color(0xFFE04B4B)))
+                Text(if (connected) "已连接 voice-xiaoc-gateway" else "未连接",
+                    color = Color.White, fontSize = 18.sp, fontFamily = FontFamily.Monospace)
+            }
+
+            Field("状态", status)
+            Field("网关", svc?.let { "${it.config.host}:${it.config.port}" } ?: "—")
+            Field("版本", "v$versionName (code $versionCode)")
+            Field("OTA", otaStateText(otaState))
+            if (lastReply.isNotBlank()) Field("最新回复", lastReply)
+
+            Spacer(Modifier.weight(1f))
+            Text("P1c · OSS 首装 + 自动更新", color = Color(0xFF555560),
+                fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+        }
+    }
+}
+
+@Composable
+private fun Field(label: String, value: String) {
+    Column {
+        Text(label, color = Color(0xFF888892), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+        Text(value, color = Color(0xFFE6E6EA), fontSize = 16.sp, fontFamily = FontFamily.Monospace)
+    }
+}
+
+private fun otaStateText(s: VersionChecker.State): String = when (s) {
+    is VersionChecker.State.Idle -> "空闲"
+    is VersionChecker.State.Checking -> "检查更新中…"
+    is VersionChecker.State.UpToDate -> "已是最新"
+    is VersionChecker.State.UpdateAvailable -> "发现新版本 v${s.manifest.versionName}"
+    is VersionChecker.State.Updating -> "更新中：${s.progress}"
+    is VersionChecker.State.Failed -> "检查失败：${s.reason}"
+}

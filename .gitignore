@@ -33,6 +33,10 @@ glasses-app/.cxx/
 # Shared module
 shared/build/
 
+# voice-xiaoc module
+voice-xiaoc/build/
+*.apk
+
 # Server
 server/node_modules/
 server/.env
