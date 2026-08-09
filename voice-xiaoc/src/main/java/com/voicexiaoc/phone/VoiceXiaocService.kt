@@ -132,7 +132,20 @@ class VoiceXiaocService : Service() {
             }
         }
         scope.launch {
-            ws.ttsAudio.collect { a -> tts.playBase64(a.base64, a.format) }
+            ws.ttsAudio.collect { a ->
+                // Half-duplex: pause the mic for the duration of playback. AEC
+                // alone didn't reliably stop the phone hearing its own TTS
+                // through the speaker and re-transcribing it as user speech
+                // (self-talk echo loop) — the surest fix is to just not listen
+                // while we're talking.
+                audio.stop()
+                tts.playBase64(a.base64, a.format, onDone = {
+                    scope.launch {
+                        kotlinx.coroutines.delay(300) // let room echo/reverb tail settle
+                        resumeMicIfNeeded()
+                    }
+                })
+            }
         }
         scope.launch {
             ws.status.collect { s -> updateNotification(s) }
@@ -295,11 +308,20 @@ class VoiceXiaocService : Service() {
         }
     }
 
+    /** Re-open the mic if the wake session is alive but paused for TTS playback. */
+    private fun resumeMicIfNeeded() {
+        if (asr != null && !audio.isRecording.value) {
+            val client = asr ?: return
+            audio.startPcm(scope) { pcm -> client.sendPcm(pcm) }
+        }
+    }
+
     /** Enter "armed" state: wake heard (or a follow-up window), capturing the next command. */
     private fun arm(chime: Boolean = true) {
         if (chime) {
             ws.sendWake("小C", 1.0)
             tts.stop()
+            resumeMicIfNeeded() // interrupting playback early — make sure the mic is back on
         }
         finals.setLength(0)
         wakeArmed = true

@@ -49,9 +49,18 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
         tts.speak(text, TextToSpeech.QUEUE_ADD, null, "vx-${System.currentTimeMillis()}")
     }
 
-    /** Decode a base64 audio blob (mp3/wav) to a temp file and play it. */
-    fun playBase64(base64: String, format: String = "mp3") {
-        if (base64.isBlank()) return
+    /**
+     * Decode a base64 audio blob (mp3/wav) to a temp file and play it.
+     *
+     * [onDone] fires exactly once, on natural completion, playback error, or
+     * decode/setup failure — the caller (VoiceXiaocService) uses it to know
+     * when it's safe to re-open the mic without picking up our own voice
+     * (half-duplex: mic is paused by the caller for the duration of playback,
+     * since AEC alone did not reliably prevent the phone hearing its own TTS
+     * and re-transcribing it, causing a self-talk echo loop).
+     */
+    fun playBase64(base64: String, format: String = "mp3", onDone: (() -> Unit)? = null) {
+        if (base64.isBlank()) { onDone?.invoke(); return }
         try {
             val bytes = Base64.decode(base64, Base64.DEFAULT)
             val file = File(context.cacheDir, "vx-tts.$format")
@@ -59,13 +68,18 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
             stop()
             mediaPlayer = MediaPlayer().apply {
                 setDataSource(file.absolutePath)
-                setOnCompletionListener { mp -> mp.release(); if (mediaPlayer === mp) mediaPlayer = null }
+                setOnCompletionListener { mp -> mp.release(); if (mediaPlayer === mp) mediaPlayer = null; onDone?.invoke() }
+                setOnErrorListener { mp, what, extra ->
+                    Log.e(TAG, "MediaPlayer error what=$what extra=$extra")
+                    mp.release(); if (mediaPlayer === mp) mediaPlayer = null; onDone?.invoke(); true
+                }
                 prepare()
                 start()
             }
             Log.i(TAG, "Playing ${bytes.size}B $format audio")
         } catch (e: Exception) {
             Log.e(TAG, "playBase64 failed: ${e.message}")
+            onDone?.invoke()
         }
     }
 
