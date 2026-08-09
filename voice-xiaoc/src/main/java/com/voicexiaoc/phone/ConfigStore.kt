@@ -23,6 +23,9 @@ class ConfigStore(context: Context) {
         private const val KEY_TOKEN = "token"
         private const val KEY_AUTO_CONNECT = "auto_connect"
         private const val KEY_VERSION_URL = "version_url"
+        private const val KEY_ASR_SECRET_ID = "asr_secret_id"
+        private const val KEY_ASR_SECRET_KEY = "asr_secret_key"
+        private const val KEY_ASR_APPID = "asr_appid"
 
         // Deployment target VPS gateway (see voice-xiaoc-gateway).
         const val DEFAULT_HOST = "120.26.28.49"
@@ -55,6 +58,26 @@ class ConfigStore(context: Context) {
     var versionUrl: String
         get() = prefs.getString(KEY_VERSION_URL, DEFAULT_VERSION_URL) ?: DEFAULT_VERSION_URL
         set(value) = prefs.edit().putString(KEY_VERSION_URL, value).apply()
+
+    // ── Tencent Cloud ASR credentials ────────────────────────────────
+    // Defaults come from BuildConfig (injected from local.properties at build
+    // time). A runtime override (e.g. rotated key) can be persisted here.
+
+    var asrSecretId: String
+        get() = prefs.getString(KEY_ASR_SECRET_ID, null) ?: BuildConfig.TENCENT_SECRET_ID
+        set(value) = prefs.edit().putString(KEY_ASR_SECRET_ID, value).apply()
+
+    var asrSecretKey: String
+        get() = prefs.getString(KEY_ASR_SECRET_KEY, null) ?: BuildConfig.TENCENT_SECRET_KEY
+        set(value) = prefs.edit().putString(KEY_ASR_SECRET_KEY, value).apply()
+
+    var asrAppId: String
+        get() = prefs.getString(KEY_ASR_APPID, null) ?: BuildConfig.TENCENT_APPID
+        set(value) = prefs.edit().putString(KEY_ASR_APPID, value).apply()
+
+    /** True when ASR credentials are present (from local.properties or override). */
+    val asrConfigured: Boolean
+        get() = asrSecretId.isNotBlank() && asrSecretKey.isNotBlank() && asrAppId.isNotBlank()
 
     val wsUrl: String
         get() = "ws://$host:$port"

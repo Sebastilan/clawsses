@@ -63,10 +63,19 @@ class VoiceXiaocService : Service() {
     lateinit var tts: TtsPlayer; private set
     lateinit var ota: OtaUpdater; private set
     lateinit var versionChecker: VersionChecker; private set
+    lateinit var audio: AudioCapture; private set
 
     // Last reply text surfaced to the UI.
     private val _lastReply = MutableStateFlow("")
     val lastReply: StateFlow<String> = _lastReply.asStateFlow()
+
+    // Push-to-talk voice pipeline state (P2a).
+    private val _voiceState = MutableStateFlow<VoiceState>(VoiceState.Idle)
+    val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
+
+    private var asr: TencentAsrClient? = null
+    private val finals = StringBuilder()     // accumulated finalized sentences
+    private var finishGuard: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -75,6 +84,7 @@ class VoiceXiaocService : Service() {
 
         config = ConfigStore(this)
         tts = TtsPlayer(this)
+        audio = AudioCapture(this)
         ws = WsClient(scope).apply {
             host = config.host
             port = config.port
@@ -97,6 +107,7 @@ class VoiceXiaocService : Service() {
         scope.launch {
             ws.replies.collect { r ->
                 _lastReply.value = r.text
+                _voiceState.value = VoiceState.Reply(r.text)
                 tts.speak(r.text)
             }
         }
@@ -136,6 +147,9 @@ class VoiceXiaocService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
+        finishGuard?.cancel()
+        audio.cleanup()
+        asr?.cancel(); asr = null
         ws.disconnect()
         tts.cleanup()
         wakeLock?.let { if (it.isHeld) it.release() }
@@ -146,6 +160,96 @@ class VoiceXiaocService : Service() {
     /** Public entry for the UI: send a typed/recognized utterance to the gateway. */
     fun sendText(text: String) {
         if (text.isBlank()) return
+        ws.sendAsrText(text)
+    }
+
+    val isListening: Boolean get() = asr != null
+
+    /** UI toggle: start listening if idle, otherwise stop and submit. */
+    fun toggleListening() {
+        if (isListening) stopListening() else startListening()
+    }
+
+    /**
+     * P2a "simulated wake": user taps the button → open mic, stream PCM to
+     * Tencent streaming ASR. Interim/final transcripts drive [voiceState].
+     * The accumulated text is sent to the gateway when the user stops (or the
+     * server closes the stream).
+     */
+    fun startListening() {
+        if (isListening) return
+        if (!config.asrConfigured) {
+            _voiceState.value = VoiceState.Error("未配置腾讯 ASR 凭据（local.properties: tencent.*）")
+            Log.e(TAG, "ASR credentials missing")
+            return
+        }
+        // Report a wake event to the gateway and stop any ongoing TTS (avoid echo).
+        ws.sendWake("小C", 1.0)
+        tts.stop()
+
+        finals.setLength(0)
+        _voiceState.value = VoiceState.Listening
+
+        val client = TencentAsrClient(
+            secretId = config.asrSecretId,
+            secretKey = config.asrSecretKey,
+            appId = config.asrAppId,
+            engine = "16k_zh",
+            voiceFormat = 1,   // raw PCM 16k mono from AudioCapture
+        )
+        asr = client
+        client.start(object : TencentAsrClient.Listener {
+            override fun onReady() {
+                Log.i(TAG, "ASR ready — streaming mic PCM")
+                audio.startPcm(scope) { pcm -> client.sendPcm(pcm) }
+            }
+            override fun onPartial(text: String) {
+                _voiceState.value = VoiceState.Recognizing(finals.toString() + text)
+            }
+            override fun onFinal(text: String) {
+                finals.append(text)
+                _voiceState.value = VoiceState.Recognizing(finals.toString())
+            }
+            override fun onCompleted() = finalizeAndSend()
+            override fun onError(msg: String) {
+                Log.e(TAG, "ASR error: $msg")
+                audio.stop()
+                asr = null
+                _voiceState.value = VoiceState.Error(msg)
+            }
+        })
+    }
+
+    /** Stop capturing and flush the ASR stream; result is submitted on completion. */
+    fun stopListening() {
+        val client = asr ?: return
+        audio.stop()
+        client.finish()
+        // Guard: if the server never sends final=1, force-submit what we have.
+        finishGuard?.cancel()
+        finishGuard = scope.launch {
+            kotlinx.coroutines.delay(3000)
+            if (asr === client) {
+                Log.w(TAG, "finish guard fired — submitting accumulated text")
+                finalizeAndSend()
+            }
+        }
+    }
+
+    private fun finalizeAndSend() {
+        finishGuard?.cancel(); finishGuard = null
+        audio.stop()
+        asr?.cancel()
+        asr = null
+        val text = finals.toString().trim()
+        if (text.isEmpty()) {
+            _voiceState.value = VoiceState.Idle
+            Log.i(TAG, "ASR produced no text")
+            return
+        }
+        Log.i(TAG, "ASR final -> gateway: $text")
+        _voiceState.value = VoiceState.Sent(text)
+        _lastReply.value = ""
         ws.sendAsrText(text)
     }
 

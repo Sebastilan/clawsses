@@ -13,8 +13,10 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -23,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -108,11 +111,12 @@ private fun StatusScreen(svc: VoiceXiaocService?, versionName: String, versionCo
     val otaState by (svc?.versionChecker?.state ?: MutableStateFlow(VersionChecker.State.Idle))
         .collectAsState(initial = VersionChecker.State.Idle)
     val lastReply by (svc?.lastReply ?: MutableStateFlow("")).collectAsState()
+    val voice by (svc?.voiceState ?: MutableStateFlow<VoiceState>(VoiceState.Idle)).collectAsState()
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0B0B0F)) {
         Column(
             modifier = Modifier.fillMaxSize().padding(28.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text("语音小C", color = Color(0xFF7CFF9B), fontSize = 30.sp,
                 fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
@@ -129,12 +133,60 @@ private fun StatusScreen(svc: VoiceXiaocService?, versionName: String, versionCo
             Field("网关", svc?.let { "${it.config.host}:${it.config.port}" } ?: "—")
             Field("版本", "v$versionName (code $versionCode)")
             Field("OTA", otaStateText(otaState))
-            if (lastReply.isNotBlank()) Field("最新回复", lastReply)
+
+            // ── Push-to-talk (P2a simulated wake) ─────────────────────
+            VoiceStatusCard(voice)
+
+            val active = voice is VoiceState.Listening || voice is VoiceState.Recognizing
+            TalkButton(active = active, enabled = svc != null) { svc?.toggleListening() }
 
             Spacer(Modifier.weight(1f))
-            Text("P1c · OSS 首装 + 自动更新", color = Color(0xFF555560),
+            Text("P2a · 点按唤醒 + 腾讯流式 ASR", color = Color(0xFF555560),
                 fontSize = 12.sp, fontFamily = FontFamily.Monospace)
         }
+    }
+}
+
+@Composable
+private fun VoiceStatusCard(voice: VoiceState) {
+    val (accent, detail) = when (voice) {
+        is VoiceState.Idle -> Color(0xFF888892) to "点按下方按钮，说一句话"
+        is VoiceState.Listening -> Color(0xFF37E06B) to "麦克风已开，请说话…"
+        is VoiceState.Recognizing -> Color(0xFF7CC4FF) to (voice.text.ifBlank { "识别中…" })
+        is VoiceState.Sent -> Color(0xFF7CFF9B) to "已发送: ${voice.text}"
+        is VoiceState.Reply -> Color(0xFFFFD37C) to "小C: ${voice.text}"
+        is VoiceState.Error -> Color(0xFFE04B4B) to voice.message
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF15151C)).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text("语音", color = Color(0xFF888892), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+        Text(voice.label(), color = accent, fontSize = 18.sp,
+            fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+        Text(detail, color = Color(0xFFE6E6EA), fontSize = 15.sp, fontFamily = FontFamily.Monospace)
+    }
+}
+
+@Composable
+private fun TalkButton(active: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val bg = when {
+        !enabled -> Color(0xFF2A2A31)
+        active -> Color(0xFFE04B4B)
+        else -> Color(0xFF1E7A3E)
+    }
+    Box(
+        modifier = Modifier.fillMaxWidth().height(72.dp)
+            .clip(RoundedCornerShape(16.dp)).background(bg)
+            .clickable(enabled = enabled) { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            if (active) "■  停止并发送" else "🎤  点按开始说话",
+            color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace, textAlign = TextAlign.Center
+        )
     }
 }
 

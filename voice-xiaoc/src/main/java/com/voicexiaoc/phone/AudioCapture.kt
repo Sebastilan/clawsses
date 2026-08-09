@@ -47,7 +47,23 @@ class AudioCapture(private val context: Context) {
     private var aec: AcousticEchoCanceler? = null
     private var agc: AutomaticGainControl? = null
 
+    /**
+     * Stream raw PCM 16-bit LE mono 16kHz chunks (~[CHUNK_DURATION_MS] each).
+     * This is the path the Tencent streaming ASR client consumes.
+     */
+    fun startPcm(scope: CoroutineScope, onPcm: (pcm: ByteArray) -> Unit) {
+        start(scope, onRaw = onPcm, onChunk = null)
+    }
+
     fun start(scope: CoroutineScope, onChunk: (base64Pcm: String) -> Unit) {
+        start(scope, onRaw = null, onChunk = onChunk)
+    }
+
+    private fun start(
+        scope: CoroutineScope,
+        onRaw: ((ByteArray) -> Unit)?,
+        onChunk: ((String) -> Unit)?,
+    ) {
         if (_isRecording.value) return
 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
@@ -89,8 +105,9 @@ class AudioCapture(private val context: Context) {
                 while (isActive && _isRecording.value) {
                     val n = audioRecord?.read(buffer, 0, chunkBytes) ?: -1
                     if (n > 0) {
-                        val data = if (n == chunkBytes) buffer else buffer.copyOf(n)
-                        onChunk(Base64.encodeToString(data, Base64.NO_WRAP))
+                        val data = if (n == chunkBytes) buffer.copyOf() else buffer.copyOf(n)
+                        onRaw?.invoke(data)
+                        onChunk?.invoke(Base64.encodeToString(data, Base64.NO_WRAP))
                     }
                 }
             }
