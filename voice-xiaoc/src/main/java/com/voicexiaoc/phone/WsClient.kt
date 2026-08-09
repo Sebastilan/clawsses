@@ -184,6 +184,22 @@ class WsClient(private val scope: CoroutineScope) {
         send(gson.toJson(mapOf("type" to "ping", "ts" to now())))
     }
 
+    /**
+     * Remote log line — every ASR/audio/lifecycle event and exception gets
+     * mirrored here so debugging doesn't depend on screenshots or ADB.
+     * Best-effort: silently dropped if the socket isn't connected yet
+     * (gateway logs it server-side via journalctl).
+     */
+    fun sendLog(level: String, tag: String, msg: String) {
+        Log.i(TAG, "[remote-log $level/$tag] $msg")
+        if (!_connected.value) return
+        try {
+            send(gson.toJson(mapOf(
+                "type" to "log", "ts" to now(), "level" to level, "tag" to tag, "msg" to msg
+            )))
+        } catch (_: Exception) { /* never let logging crash the app */ }
+    }
+
     // ── gateway → phone ──────────────────────────────────────────────
 
     private fun handleMessage(raw: String) {

@@ -41,6 +41,11 @@ class AudioCapture(private val context: Context) {
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
+    /** Optional remote-log sink (level, msg) — wired by the owning service so
+     * capture failures surface server-side instead of only in local logcat. */
+    var onLog: ((String, String) -> Unit)? = null
+    private fun rlog(level: String, msg: String) { Log.i(TAG, msg); onLog?.invoke(level, msg) }
+
     private var audioRecord: AudioRecord? = null
     private var recordJob: Job? = null
     private var ns: NoiseSuppressor? = null
@@ -68,13 +73,13 @@ class AudioCapture(private val context: Context) {
 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
-            Log.e(TAG, "RECORD_AUDIO permission not granted")
+            rlog("error", "RECORD_AUDIO permission not granted")
             return
         }
 
         val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
         if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
-            Log.e(TAG, "Invalid buffer size: $bufferSize")
+            rlog("error", "Invalid buffer size: $bufferSize")
             return
         }
 
@@ -85,7 +90,7 @@ class AudioCapture(private val context: Context) {
                 bufferSize * 2
             )
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord failed to initialize")
+                rlog("error", "AudioRecord failed to initialize (state=${audioRecord?.state})")
                 audioRecord?.release(); audioRecord = null
                 return
             }
@@ -97,7 +102,7 @@ class AudioCapture(private val context: Context) {
 
             audioRecord?.startRecording()
             _isRecording.value = true
-            Log.i(TAG, "Recording started")
+            rlog("info", "Recording started (bufferSize=${bufferSize * 2})")
 
             val chunkBytes = (SAMPLE_RATE * CHUNK_DURATION_MS / 1000) * 2
             recordJob = scope.launch(Dispatchers.IO) {
@@ -112,7 +117,9 @@ class AudioCapture(private val context: Context) {
                 }
             }
         } catch (e: SecurityException) {
-            Log.e(TAG, "Permission denied", e)
+            rlog("error", "Permission denied: ${e.message}")
+        } catch (e: Exception) {
+            rlog("error", "AudioRecord start threw: ${e.message}")
         }
     }
 

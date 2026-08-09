@@ -102,6 +102,16 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         try { unbindService(connection) } catch (_: Exception) {}
     }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val granted = permissions.zip(grantResults.toTypedArray())
+            .joinToString { (p, r) -> "$p=${if (r == PackageManager.PERMISSION_GRANTED) "granted" else "denied"}" }
+        Log.i(TAG, "permission result: $granted")
+        VoiceXiaocService.instance?.ws?.sendLog("info", "MainActivity", "permission result: $granted")
+    }
 }
 
 @Composable

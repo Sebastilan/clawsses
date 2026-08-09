@@ -91,6 +91,8 @@ class VoiceXiaocService : Service() {
             token = config.token
             deviceId = "phone-${Build.MODEL}".replace(" ", "_")
         }
+        audio.onLog = { level, msg -> ws.sendLog(level, "AudioCapture", msg) }
+        installCrashReporter()
         ota = OtaUpdater(this, scope)
         val localCode = try {
             packageManager.getPackageInfo(packageName, 0).let {
@@ -178,11 +180,16 @@ class VoiceXiaocService : Service() {
      */
     fun startListening() {
         if (isListening) return
+        ws.sendLog("info", "VoiceService", "startListening tapped")
         if (!config.asrConfigured) {
             _voiceState.value = VoiceState.Error("未配置腾讯 ASR 凭据（local.properties: tencent.*）")
-            Log.e(TAG, "ASR credentials missing")
+            ws.sendLog("error", "VoiceService", "ASR credentials missing")
             return
         }
+        val hasMic = androidx.core.content.ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ws.sendLog("info", "VoiceService", "RECORD_AUDIO granted=$hasMic")
         // Report a wake event to the gateway and stop any ongoing TTS (avoid echo).
         ws.sendWake("小C", 1.0)
         tts.stop()
@@ -200,19 +207,24 @@ class VoiceXiaocService : Service() {
         asr = client
         client.start(object : TencentAsrClient.Listener {
             override fun onReady() {
-                Log.i(TAG, "ASR ready — streaming mic PCM")
+                ws.sendLog("info", "TencentAsr", "handshake ok — streaming mic PCM")
                 audio.startPcm(scope) { pcm -> client.sendPcm(pcm) }
             }
             override fun onPartial(text: String) {
+                ws.sendLog("debug", "TencentAsr", "partial: $text")
                 _voiceState.value = VoiceState.Recognizing(finals.toString() + text)
             }
             override fun onFinal(text: String) {
+                ws.sendLog("info", "TencentAsr", "final sentence: $text")
                 finals.append(text)
                 _voiceState.value = VoiceState.Recognizing(finals.toString())
             }
-            override fun onCompleted() = finalizeAndSend()
+            override fun onCompleted() {
+                ws.sendLog("info", "TencentAsr", "stream completed")
+                finalizeAndSend()
+            }
             override fun onError(msg: String) {
-                Log.e(TAG, "ASR error: $msg")
+                ws.sendLog("error", "TencentAsr", "error: $msg")
                 audio.stop()
                 asr = null
                 _voiceState.value = VoiceState.Error(msg)
@@ -223,6 +235,7 @@ class VoiceXiaocService : Service() {
     /** Stop capturing and flush the ASR stream; result is submitted on completion. */
     fun stopListening() {
         val client = asr ?: return
+        ws.sendLog("info", "VoiceService", "stopListening tapped")
         audio.stop()
         client.finish()
         // Guard: if the server never sends final=1, force-submit what we have.
@@ -230,7 +243,7 @@ class VoiceXiaocService : Service() {
         finishGuard = scope.launch {
             kotlinx.coroutines.delay(3000)
             if (asr === client) {
-                Log.w(TAG, "finish guard fired — submitting accumulated text")
+                ws.sendLog("warn", "VoiceService", "finish guard fired — submitting accumulated text")
                 finalizeAndSend()
             }
         }
@@ -244,13 +257,32 @@ class VoiceXiaocService : Service() {
         val text = finals.toString().trim()
         if (text.isEmpty()) {
             _voiceState.value = VoiceState.Idle
-            Log.i(TAG, "ASR produced no text")
+            ws.sendLog("warn", "VoiceService", "ASR produced no text")
             return
         }
-        Log.i(TAG, "ASR final -> gateway: $text")
+        ws.sendLog("info", "VoiceService", "ASR final -> gateway: $text")
         _voiceState.value = VoiceState.Sent(text)
         _lastReply.value = ""
         ws.sendAsrText(text)
+    }
+
+    private fun installCrashReporter() {
+        val prefs = getSharedPreferences("voicexiaoc_crash", Context.MODE_PRIVATE)
+        prefs.getString("last_crash", null)?.let { crash ->
+            prefs.edit().remove("last_crash").apply()
+            scope.launch {
+                kotlinx.coroutines.delay(3000) // let ws connect first
+                ws.sendLog("error", "CrashReporter", "previous run crashed: $crash")
+            }
+        }
+        val default = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val trace = Log.getStackTraceString(throwable).take(2000)
+                prefs.edit().putString("last_crash", "${throwable.javaClass.name}: ${throwable.message}\n$trace").commit()
+            } catch (_: Exception) { }
+            default?.uncaughtException(thread, throwable)
+        }
     }
 
     fun reconnect() {
