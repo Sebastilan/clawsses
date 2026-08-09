@@ -79,7 +79,6 @@ class VoiceXiaocService : Service() {
     private var asr: TencentAsrClient? = null
     private val finals = StringBuilder()     // accumulated finalized sentences
     private var finishGuard: Job? = null
-    @Volatile private var ttsAudioGen = 0    // bumped whenever a tts_audio frame arrives, cancels on-device fallback
 
     // Wake-word (P3): continuous ASR session state.
     private var wakeArmed = false            // true = wake word heard, capturing the command sentence
@@ -115,18 +114,13 @@ class VoiceXiaocService : Service() {
         startForeground(NOTIF_ID, buildNotification("语音小C 启动中…"))
         acquireWakeLock()
 
-        // Route gateway replies to UI state. Doubao-synthesized audio (tts_audio)
-        // is the primary voice; on-device system TTS only fires as a fallback if
-        // no tts_audio frame shows up shortly after (gateway synth failed/slow).
+        // Route gateway replies to UI state. Voice is Doubao-only (tts_audio) —
+        // no on-device system TTS fallback; a reply with no audio is just shown
+        // silently on screen rather than read out in the wrong (flat) voice.
         scope.launch {
             ws.replies.collect { r ->
                 _lastReply.value = r.text
                 _voiceState.value = VoiceState.Reply(r.text)
-                val myGen = ++ttsAudioGen
-                scope.launch {
-                    kotlinx.coroutines.delay(4000)
-                    if (ttsAudioGen == myGen) tts.speak(r.text) // no tts_audio arrived — fall back
-                }
                 // Follow-up window: re-arm silently (no wake word needed) so the
                 // user can keep talking right after hearing the answer. If they
                 // don't say anything, arm()'s own timeout drops back to passive
@@ -138,10 +132,7 @@ class VoiceXiaocService : Service() {
             }
         }
         scope.launch {
-            ws.ttsAudio.collect { a ->
-                ttsAudioGen++ // cancel the pending on-device fallback for this reply
-                tts.playBase64(a.base64, a.format)
-            }
+            ws.ttsAudio.collect { a -> tts.playBase64(a.base64, a.format) }
         }
         scope.launch {
             ws.status.collect { s -> updateNotification(s) }
