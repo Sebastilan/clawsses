@@ -1,16 +1,21 @@
 package com.voicexiaoc.phone
 
 /**
- * UI-facing state of the push-to-talk voice pipeline, surfaced by
+ * UI-facing state of the always-on voice pipeline, surfaced by
  * [VoiceXiaocService.voiceState] and rendered on the status screen.
  *
- * Flow: Idle → Listening → Recognizing(partial) → Sent → Reply → Idle
+ * Flow (P3): WakeListening (mic always streaming, waiting for "小C") →
+ * Listening (armed, waiting for the command sentence) → Recognizing(partial)
+ * → Sent → Reply → WakeListening
  */
 sealed class VoiceState {
-    /** Not listening. */
+    /** Not listening at all (ASR pipeline not started / creds missing). */
     object Idle : VoiceState()
 
-    /** Mic open, connecting/streaming to ASR, no transcript yet. */
+    /** Continuous mic streaming, passively waiting to hear the wake word. */
+    object WakeListening : VoiceState()
+
+    /** Wake word heard — armed, waiting for the command sentence. */
     object Listening : VoiceState()
 
     /** ASR is returning text (interim + finalized sentences). */
@@ -28,7 +33,8 @@ sealed class VoiceState {
     /** Short human-readable label for the status screen. */
     fun label(): String = when (this) {
         is Idle -> "待机"
-        is Listening -> "正在录音…"
+        is WakeListening -> "常听中（说 小C 唤醒）"
+        is Listening -> "已唤醒，请说…"
         is Recognizing -> "识别中"
         is Sent -> "已发送"
         is Reply -> "收到回复"

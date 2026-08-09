@@ -36,6 +36,8 @@ class VoiceXiaocService : Service() {
         private const val CHANNEL_ID = "voicexiaoc"
         private const val NOTIF_ID = 1
         private const val ACTION_INSTALL_STATUS = "com.voicexiaoc.phone.INSTALL_STATUS"
+        private const val WAKE_WORD = "小c" // matched case-insensitively against ASR finals
+        private const val WAKE_ARM_TIMEOUT_MS = 8000L
 
         @Volatile var instance: VoiceXiaocService? = null
             private set
@@ -76,6 +78,12 @@ class VoiceXiaocService : Service() {
     private var asr: TencentAsrClient? = null
     private val finals = StringBuilder()     // accumulated finalized sentences
     private var finishGuard: Job? = null
+    @Volatile private var ttsAudioGen = 0    // bumped whenever a tts_audio frame arrives, cancels on-device fallback
+
+    // Wake-word (P3): continuous ASR session state.
+    private var wakeArmed = false            // true = wake word heard, capturing the command sentence
+    private var wakeArmTimeout: Job? = null
+    private var wakeSessionActive = false
 
     override fun onCreate() {
         super.onCreate()
@@ -105,16 +113,33 @@ class VoiceXiaocService : Service() {
         startForeground(NOTIF_ID, buildNotification("语音小C 启动中…"))
         acquireWakeLock()
 
-        // Route gateway replies to on-device TTS + UI state.
+        // Route gateway replies to UI state. Doubao-synthesized audio (tts_audio)
+        // is the primary voice; on-device system TTS only fires as a fallback if
+        // no tts_audio frame shows up shortly after (gateway synth failed/slow).
         scope.launch {
             ws.replies.collect { r ->
                 _lastReply.value = r.text
                 _voiceState.value = VoiceState.Reply(r.text)
-                tts.speak(r.text)
+                val myGen = ++ttsAudioGen
+                scope.launch {
+                    kotlinx.coroutines.delay(2500)
+                    if (ttsAudioGen == myGen) tts.speak(r.text) // no tts_audio arrived — fall back
+                }
+                // After the reply has had time to be heard, drop back to passive
+                // wake-listening so the mic keeps waiting for the next "小C".
+                scope.launch {
+                    kotlinx.coroutines.delay(6000)
+                    if (_voiceState.value is VoiceState.Reply && wakeSessionActive && !wakeArmed) {
+                        _voiceState.value = VoiceState.WakeListening
+                    }
+                }
             }
         }
         scope.launch {
-            ws.ttsAudio.collect { a -> tts.playBase64(a.base64, a.format) }
+            ws.ttsAudio.collect { a ->
+                ttsAudioGen++ // cancel the pending on-device fallback for this reply
+                tts.playBase64(a.base64, a.format)
+            }
         }
         scope.launch {
             ws.status.collect { s -> updateNotification(s) }
@@ -124,6 +149,10 @@ class VoiceXiaocService : Service() {
 
         // Startup version self-check → silent OTA when a newer build exists.
         versionChecker.check(config.versionUrl, autoInstall = true)
+
+        // P3: mic starts listening continuously right away, passively waiting
+        // to hear the wake word — no button tap needed for hands-free use.
+        if (config.asrConfigured) startWakeSession()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -149,6 +178,8 @@ class VoiceXiaocService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
+        wakeSessionActive = false
+        wakeArmTimeout?.cancel()
         finishGuard?.cancel()
         audio.cleanup()
         asr?.cancel(); asr = null
@@ -167,16 +198,137 @@ class VoiceXiaocService : Service() {
 
     val isListening: Boolean get() = asr != null
 
-    /** UI toggle: start listening if idle, otherwise stop and submit. */
+    /**
+     * UI toggle. With the continuous wake session running (the normal case),
+     * tapping the button is a manual "force wake" — same effect as saying
+     * "小C" — or, if already armed, an early submit of whatever's been said
+     * so far. Only falls back to old push-to-talk if the wake session isn't
+     * running (e.g. ASR creds missing).
+     */
     fun toggleListening() {
+        if (wakeSessionActive) {
+            if (!wakeArmed) {
+                ws.sendLog("info", "VoiceService", "manual tap force-arm")
+                arm()
+            } else {
+                submitArmedCommand()
+            }
+            return
+        }
         if (isListening) stopListening() else startListening()
     }
 
     /**
-     * P2a "simulated wake": user taps the button → open mic, stream PCM to
-     * Tencent streaming ASR. Interim/final transcripts drive [voiceState].
-     * The accumulated text is sent to the gateway when the user stops (or the
-     * server closes the stream).
+     * P3: continuous always-on ASR session. Runs from onCreate until the
+     * service dies, auto-restarting on completion/error (Tencent sessions
+     * have a max duration/idle timeout). Passively streams mic audio; final
+     * transcripts are scanned for the wake word via [handleWakeFinal].
+     */
+    private fun startWakeSession() {
+        if (asr != null) return
+        wakeSessionActive = true
+        wakeArmed = false
+        finals.setLength(0)
+        _voiceState.value = VoiceState.WakeListening
+
+        val client = TencentAsrClient(
+            secretId = config.asrSecretId,
+            secretKey = config.asrSecretKey,
+            appId = config.asrAppId,
+            engine = "16k_zh",
+            voiceFormat = 1,
+        )
+        asr = client
+        client.start(object : TencentAsrClient.Listener {
+            override fun onReady() {
+                ws.sendLog("info", "TencentAsr", "wake session ready — streaming mic PCM")
+                audio.startPcm(scope) { pcm -> client.sendPcm(pcm) }
+            }
+            override fun onPartial(text: String) {
+                if (wakeArmed) _voiceState.value = VoiceState.Recognizing(finals.toString() + text)
+            }
+            override fun onFinal(text: String) {
+                ws.sendLog("info", "TencentAsr", "wake session final: $text")
+                handleWakeFinal(text)
+            }
+            override fun onCompleted() {
+                ws.sendLog("info", "TencentAsr", "wake session completed")
+                audio.stop()
+                asr = null
+                if (wakeArmed) submitArmedCommand()
+                if (wakeSessionActive) scope.launch {
+                    kotlinx.coroutines.delay(300)
+                    startWakeSession()
+                }
+            }
+            override fun onError(msg: String) {
+                ws.sendLog("error", "TencentAsr", "wake session error: $msg")
+                audio.stop()
+                asr = null
+                if (wakeSessionActive) {
+                    scope.launch { kotlinx.coroutines.delay(1500); startWakeSession() }
+                } else {
+                    _voiceState.value = VoiceState.Error(msg)
+                }
+            }
+        })
+    }
+
+    /** Scan a finalized ASR sentence for the wake word; arm on hit, or append if already armed. */
+    private fun handleWakeFinal(text: String) {
+        if (!wakeArmed) {
+            val idx = text.indexOf(WAKE_WORD, ignoreCase = true)
+            if (idx < 0) return // not the wake word — stay passively listening
+            val rest = text.substring(idx + WAKE_WORD.length).trim()
+            arm()
+            if (rest.isNotBlank()) {
+                finals.append(rest)
+                submitArmedCommand()
+            }
+        } else {
+            finals.append(text)
+            submitArmedCommand()
+        }
+    }
+
+    /** Enter "armed" state: wake heard, capturing the next command sentence. */
+    private fun arm() {
+        ws.sendWake("小C", 1.0)
+        tts.stop()
+        finals.setLength(0)
+        wakeArmed = true
+        _voiceState.value = VoiceState.Listening
+        wakeArmTimeout?.cancel()
+        wakeArmTimeout = scope.launch {
+            kotlinx.coroutines.delay(WAKE_ARM_TIMEOUT_MS)
+            if (wakeArmed) {
+                ws.sendLog("info", "VoiceService", "wake arm timed out, back to passive listening")
+                wakeArmed = false
+                finals.setLength(0)
+                _voiceState.value = VoiceState.WakeListening
+            }
+        }
+    }
+
+    /** Send the accumulated command text (since arming) to the gateway and disarm. */
+    private fun submitArmedCommand() {
+        wakeArmTimeout?.cancel(); wakeArmTimeout = null
+        val text = finals.toString().trim()
+        finals.setLength(0)
+        wakeArmed = false
+        if (text.isBlank()) {
+            _voiceState.value = VoiceState.WakeListening
+            return
+        }
+        ws.sendLog("info", "VoiceService", "wake command -> gateway: $text")
+        _voiceState.value = VoiceState.Sent(text)
+        _lastReply.value = ""
+        ws.sendAsrText(text)
+    }
+
+    /**
+     * P2a fallback push-to-talk: only used if the continuous wake session
+     * isn't running (e.g. ASR creds missing at startup).
      */
     fun startListening() {
         if (isListening) return
