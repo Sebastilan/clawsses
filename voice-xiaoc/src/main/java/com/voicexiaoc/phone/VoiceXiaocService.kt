@@ -298,7 +298,13 @@ class VoiceXiaocService : Service() {
             if (idx < 0) return // not the wake word — stay passively listening
             val rest = text.substring(idx + WAKE_WORD.length).trim()
             arm()
-            if (rest.isNotBlank()) {
+            // Trailing punctuation left over from the same ASR final as the wake
+            // word itself (e.g. "小C。") must NOT count as the start of a real
+            // command — it used to get appended+submitted as-is after the
+            // silence debounce, disarming before the user's actual follow-up
+            // question ever arrived (observed bug: wake fires, then only "。"
+            // reaches the gateway and gets skipped as junk, app looks "silent").
+            if (!isJunkFragment(rest)) {
                 finals.append(rest)
                 pushSilenceSubmit()
             }
@@ -307,6 +313,10 @@ class VoiceXiaocService : Service() {
             pushSilenceSubmit()
         }
     }
+
+    /** Mirrors the gateway's server-side junk filter: punctuation/whitespace-only text isn't real content. */
+    private fun isJunkFragment(text: String): Boolean =
+        text.replace(Regex("[，,。.!?！？…\\s]"), "").length < 2
 
     /** Re-open the mic if the wake session is alive but paused for TTS playback. */
     private fun resumeMicIfNeeded() {
@@ -321,7 +331,17 @@ class VoiceXiaocService : Service() {
         if (chime) {
             ws.sendWake("小C", 1.0)
             tts.stop()
-            resumeMicIfNeeded() // interrupting playback early — make sure the mic is back on
+            // Instant "我在" ack so the user knows the wake registered without
+            // waiting on a full CC round-trip — a bundled pre-synthesized Doubao
+            // clip (zero network latency), not live TTS. Half-duplex: pause the
+            // mic for this brief playback so it doesn't get picked up as speech.
+            audio.stop()
+            tts.playRaw(R.raw.wake_ack, onDone = {
+                scope.launch {
+                    kotlinx.coroutines.delay(150)
+                    resumeMicIfNeeded()
+                }
+            })
         }
         finals.setLength(0)
         wakeArmed = true

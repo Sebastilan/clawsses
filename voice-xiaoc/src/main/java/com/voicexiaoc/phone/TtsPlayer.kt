@@ -83,6 +83,34 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
+    /**
+     * Play a bundled raw-resource audio clip (e.g. res/raw/wake_ack.mp3, a
+     * pre-synthesized Doubao "我在" clip) with zero network round-trip —
+     * used for the instant wake acknowledgment, where waiting on a live
+     * Doubao TTS call would defeat the purpose of "instant".
+     */
+    fun playRaw(resId: Int, onDone: (() -> Unit)? = null) {
+        try {
+            stop()
+            val mp = MediaPlayer.create(context, resId)
+            if (mp == null) {
+                onDone?.invoke()
+                return
+            }
+            mediaPlayer = mp.apply {
+                setOnCompletionListener { p -> p.release(); if (mediaPlayer === p) mediaPlayer = null; onDone?.invoke() }
+                setOnErrorListener { p, what, extra ->
+                    Log.e(TAG, "MediaPlayer(raw) error what=$what extra=$extra")
+                    p.release(); if (mediaPlayer === p) mediaPlayer = null; onDone?.invoke(); true
+                }
+                start()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "playRaw failed: ${e.message}")
+            onDone?.invoke()
+        }
+    }
+
     fun stop() {
         tts.stop()
         try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
