@@ -4,7 +4,7 @@ package com.voicexiaoc.phone
  * UI-facing state of the always-on voice pipeline, surfaced by
  * [VoiceXiaocService.voiceState] and rendered on the status screen.
  *
- * Flow (P3): WakeListening (mic always streaming, waiting for "小C") →
+ * Flow (P3): WakeListening (local KWS listening on-device for the wake word) →
  * Listening (armed, waiting for the command sentence) → Recognizing(partial)
  * → Sent → Reply → WakeListening
  */
@@ -33,7 +33,7 @@ sealed class VoiceState {
     /** Short human-readable label for the status screen. */
     fun label(): String = when (this) {
         is Idle -> "待机"
-        is WakeListening -> "常听中（说 小C 唤醒）"
+        is WakeListening -> "常听中（说 ${VoiceXiaocService.WAKE_WORD} 唤醒）"
         is Listening -> "已唤醒，请说…"
         is Recognizing -> "识别中"
         is Sent -> "已发送"

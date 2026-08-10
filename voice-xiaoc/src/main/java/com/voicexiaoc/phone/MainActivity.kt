@@ -151,7 +151,7 @@ private fun StatusScreen(svc: VoiceXiaocService?, versionName: String, versionCo
             TalkButton(active = active, enabled = svc != null) { svc?.toggleListening() }
 
             Spacer(Modifier.weight(1f))
-            Text("P3 · 说\"小C\"唤醒 + 豆包语音播报", color = Color(0xFF555560),
+            Text("说\"${VoiceXiaocService.WAKE_WORD}\"唤醒 · 本地识别，唤醒前不联网", color = Color(0xFF555560),
                 fontSize = 12.sp, fontFamily = FontFamily.Monospace)
         }
     }
@@ -161,7 +161,7 @@ private fun StatusScreen(svc: VoiceXiaocService?, versionName: String, versionCo
 private fun VoiceStatusCard(voice: VoiceState) {
     val (accent, detail) = when (voice) {
         is VoiceState.Idle -> Color(0xFF888892) to "点按下方按钮，说一句话"
-        is VoiceState.WakeListening -> Color(0xFF555560) to "常听中，说\"小C\"唤醒…"
+        is VoiceState.WakeListening -> Color(0xFF555560) to "常听中，说\"${VoiceXiaocService.WAKE_WORD}\"唤醒…"
         is VoiceState.Listening -> Color(0xFF37E06B) to "麦克风已开，请说话…"
         is VoiceState.Recognizing -> Color(0xFF7CC4FF) to (voice.text.ifBlank { "识别中…" })
         is VoiceState.Sent -> Color(0xFF7CFF9B) to "已发送: ${voice.text}"

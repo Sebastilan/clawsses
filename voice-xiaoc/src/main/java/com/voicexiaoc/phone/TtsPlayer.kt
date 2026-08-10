@@ -6,35 +6,28 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
-import android.speech.tts.TextToSpeech
 import android.util.Base64
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
-import java.util.Locale
 
 /**
- * Audio playback for AI responses.
+ * Audio playback for AI responses. Server-synthesized audio only.
  *
- * Ported from superbrain-glasses/TtsPlayer.kt. Two paths:
- *  - [speak]      : on-device Android TTS for plain `text_reply` frames.
- *  - [playBase64] : decode+play a base64 audio blob from a `tts_audio` frame
- *                   (server-synthesized MP3, matching super-brain's approach).
+ * The on-device Android TTS fallback was dropped in v0.4.2 ("语音只用豆包") —
+ * its engine object lingered here unused until 2026-08-10, holding a system TTS
+ * service for nothing. A reply that arrives without audio is now just shown on
+ * screen rather than read out in the wrong (flat) voice.
  */
-class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
+class TtsPlayer(private val context: Context) {
 
     companion object {
         private const val TAG = "TtsPlayer"
     }
 
-    private val tts = TextToSpeech(context, this)
-    private var ready = false
     private var mediaPlayer: MediaPlayer? = null
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusRequest: AudioFocusRequest? = null
-
-    /** When true, `text_reply` is spoken via on-device TTS. */
-    var enabled = true
 
     /**
      * Forwarded to VoiceXiaocService -> ws.sendLog, since Android's own Log.*
@@ -75,25 +68,6 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
             @Suppress("DEPRECATION")
             audioManager.abandonAudioFocus(null)
         }
-    }
-
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            val result = tts.setLanguage(Locale.CHINESE)
-            ready = result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED
-            if (!ready) {
-                tts.setLanguage(Locale.US)
-                ready = true
-            }
-            Log.i(TAG, "TTS initialized, ready=$ready")
-        } else {
-            Log.e(TAG, "TTS init failed: $status")
-        }
-    }
-
-    fun speak(text: String) {
-        if (!enabled || !ready || text.isBlank()) return
-        tts.speak(text, TextToSpeech.QUEUE_ADD, null, "vx-${System.currentTimeMillis()}")
     }
 
     /**
@@ -164,14 +138,10 @@ class TtsPlayer(private val context: Context) : TextToSpeech.OnInitListener {
     }
 
     fun stop() {
-        tts.stop()
         try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
         mediaPlayer = null
         abandonFocus()
     }
 
-    fun cleanup() {
-        stop()
-        tts.shutdown()
-    }
+    fun cleanup() = stop()
 }

@@ -47,6 +47,9 @@ class VersionChecker(
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
 
+    /** 由 Service 在用户确认安装后回报进度。 */
+    fun markUpdating(progress: String) { _state.value = State.Updating(progress) }
+
     private val gson = Gson()
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)

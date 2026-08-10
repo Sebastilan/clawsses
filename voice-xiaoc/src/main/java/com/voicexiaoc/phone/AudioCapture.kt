@@ -9,7 +9,6 @@ import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
-import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
@@ -55,22 +54,12 @@ class AudioCapture(private val context: Context) {
     private var agc: AutomaticGainControl? = null
 
     /**
-     * Stream raw PCM 16-bit LE mono 16kHz chunks (~[CHUNK_DURATION_MS] each).
-     * This is the path the Tencent streaming ASR client consumes.
+     * Stream raw PCM 16-bit LE mono 16kHz chunks (~[CHUNK_DURATION_MS] each) to
+     * whoever currently owns the mic — the local KWS spotter, or the cloud ASR
+     * client. (A second base64-emitting variant existed for uploading audio to
+     * the gateway; nothing ever called it, removed 2026-08-10.)
      */
     fun startPcm(scope: CoroutineScope, onPcm: (pcm: ByteArray) -> Unit) {
-        start(scope, onRaw = onPcm, onChunk = null)
-    }
-
-    fun start(scope: CoroutineScope, onChunk: (base64Pcm: String) -> Unit) {
-        start(scope, onRaw = null, onChunk = onChunk)
-    }
-
-    private fun start(
-        scope: CoroutineScope,
-        onRaw: ((ByteArray) -> Unit)?,
-        onChunk: ((String) -> Unit)?,
-    ) {
         if (_isRecording.value) return
 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
@@ -112,9 +101,7 @@ class AudioCapture(private val context: Context) {
                 while (isActive && _isRecording.value) {
                     val n = audioRecord?.read(buffer, 0, chunkBytes) ?: -1
                     if (n > 0) {
-                        val data = if (n == chunkBytes) buffer.copyOf() else buffer.copyOf(n)
-                        onRaw?.invoke(data)
-                        onChunk?.invoke(Base64.encodeToString(data, Base64.NO_WRAP))
+                        onPcm(if (n == chunkBytes) buffer.copyOf() else buffer.copyOf(n))
                     }
                 }
             }
