@@ -94,7 +94,9 @@ dependencies {
     // JSON
     implementation("com.google.code.gson:gson:2.10.1")
 
-    // Local JVM tests (TencentAsrClient integration test)
+    // Local JVM tests：TencentAsrClient 集成测试 + WakeMachine 状态机行为测试
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // runTest / advanceTimeBy —— 让状态机的超时逻辑在虚拟时钟上瞬间跑完
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 }
