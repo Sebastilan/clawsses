@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioDeviceInfo
 import android.media.MediaPlayer
 import android.os.Build
 import android.util.Base64
@@ -61,6 +62,31 @@ class TtsPlayer(private val context: Context) {
         return granted
     }
 
+    /**
+     * 播报实际从哪个设备出去 —— 别再靠读代码推断音频路由。
+     *
+     * 关心这个是因为「播报时能不能同时听」的方案选择完全取决于它：
+     * A2DP(媒体路,立体声宽带) 下硬件 AEC 拿不到参考信号,只能用唤醒词打断；
+     * 若要真 barge-in 就得切到 SCO/HFP(通话路),但那会把车机拽进"通话模式",
+     * 音质掉到 8kHz 还压掉导航播报。所以先量清楚现在在哪条路上。
+     */
+    private fun logRouting(mp: MediaPlayer) {
+        val route = try {
+            when (mp.routedDevice?.type) {
+                null -> "unknown"
+                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "蓝牙A2DP(媒体路·立体声)"
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "蓝牙SCO/HFP(通话路·窄带)"
+                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "手机扬声器"
+                AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "有线耳机"
+                AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_HEADSET -> "USB音频"
+                else -> "type=${mp.routedDevice?.type}"
+            }
+        } catch (e: Exception) {
+            "routing query failed: ${e.message}"
+        }
+        onLog?.invoke("info", "audio route=$route a2dp=${audioManager.isBluetoothA2dpOn} sco=${audioManager.isBluetoothScoOn}")
+    }
+
     private fun abandonFocus() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
@@ -98,6 +124,7 @@ class TtsPlayer(private val context: Context) {
                 }
                 prepare()
                 start()
+                logRouting(this)
             }
             onLog?.invoke("info", "playing ${bytes.size}B $format audio")
         } catch (e: Exception) {

@@ -20,6 +20,7 @@ class WakeMachineTest {
         val mic = mutableListOf<WakeMachine.MicOwner>()
         val commands = mutableListOf<String>()
         var asrOpen = false
+        var stopSpeakingCalls = 0
         lateinit var m: WakeMachine
 
         init {
@@ -31,6 +32,7 @@ class WakeMachineTest {
                 onOpenAsr = { asrOpen = true },
                 onCloseAsr = { asrOpen = false },
                 onCommand = { commands.add(it) },
+                onStopSpeaking = { stopSpeakingCalls++ },
                 onState = { },
             )
         }
@@ -68,20 +70,21 @@ class WakeMachineTest {
         r.m.stop()
     }
 
-    /** 回归：播报期间麦克风必须关着，否则 ASR 听见自己的 TTS → 自激循环。 */
+    /** 回归：播报期间云端 ASR 必须关着，否则它会转写小C自己的声音再回灌 → 自激。 */
     @Test
-    fun `播报期间绝不开麦 防自激循环`() = runTest {
+    fun `播报期间只听唤醒词 云端ASR必须关着`() = runTest {
         val r = Rig(this)
         r.m.start(); r.m.onWake()
         r.m.onHeard("你好", isFinal = true)
         advanceTimeBy(2600)
         r.m.onSpeaking()
-        assertEquals(WakeMachine.MicOwner.NONE, r.currentMic)
+        assertEquals("播报期间麦克风只归本地 KWS，云端 ASR 必须关着",
+            WakeMachine.MicOwner.KWS, r.currentMic)
+        assertTrue("播报期间绝不能开云端 ASR", !r.asrOpen)
         // 播报期间即使 ASR 回调漏进来，也不该被当成用户说话
         r.m.onHeard("这是小C自己的声音", isFinal = true)
         advanceTimeBy(10_000)
         assertEquals("播报期间收到的文本不该变成新命令", 1, r.commands.size)
-        assertEquals(WakeMachine.MicOwner.NONE, r.currentMic)
         r.m.stop()
     }
 
@@ -99,6 +102,54 @@ class WakeMachineTest {
         assertEquals("超时必须回到本地 KWS，否则唤醒词再也叫不醒",
             WakeMachine.MicOwner.KWS, r.currentMic)
         assertTrue(!r.asrOpen)
+        r.m.stop()
+    }
+
+    /** 打断：小C 还在说话时喊唤醒词，应立刻掐掉播报并开始录我要说的。 */
+    @Test
+    fun `播报期间喊唤醒词能打断 并立刻开始录音`() = runTest {
+        val r = Rig(this)
+        r.m.start(); r.m.onWake()
+        r.m.onHeard("讲个长故事", isFinal = true)
+        advanceTimeBy(2600)
+        r.m.onSpeaking()
+        assertEquals(0, r.stopSpeakingCalls)
+
+        r.m.onWake()                                   // 播报中命中唤醒词
+        assertEquals("必须掐断正在播的音频", 1, r.stopSpeakingCalls)
+        assertEquals("打断后麦克风交给云端 ASR", WakeMachine.MicOwner.ASR, r.currentMic)
+        assertTrue(r.asrOpen)
+
+        r.m.onHeard("换个短的", isFinal = true)
+        advanceTimeBy(2600)
+        assertEquals(listOf("讲个长故事", "换个短的"), r.commands)
+        r.m.stop()
+    }
+
+    /** 回复文本本身含唤醒词时闭麦，免得小C把自己打断。 */
+    @Test
+    fun `回复里含唤醒词时禁用打断 不会自己打断自己`() = runTest {
+        val r = Rig(this)
+        r.m.start(); r.m.onWake()
+        r.m.onHeard("祝福语", isFinal = true)
+        advanceTimeBy(2600)
+        r.m.onSpeaking(allowBargeIn = false)           // 回复是"祝你健康顺利"
+        assertEquals(WakeMachine.MicOwner.NONE, r.currentMic)
+        r.m.stop()
+    }
+
+    /** 打断之后自然播放结束的回调迟到，不该把已经开始的录音踢回常听。 */
+    @Test
+    fun `打断后迟到的播报完成回调不会打断正在进行的录音`() = runTest {
+        val r = Rig(this)
+        r.m.start(); r.m.onWake()
+        r.m.onHeard("你好", isFinal = true)
+        advanceTimeBy(2600)
+        r.m.onSpeaking()
+        r.m.onWake()                                   // 打断 → ARMED
+        r.m.onSpoken()                                 // 播放器的完成回调迟到了
+        assertEquals("迟到的回调必须被忽略", WakeMachine.MicOwner.ASR, r.currentMic)
+        assertTrue(r.asrOpen)
         r.m.stop()
     }
 

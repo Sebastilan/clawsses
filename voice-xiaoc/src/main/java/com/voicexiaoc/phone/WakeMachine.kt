@@ -29,8 +29,9 @@ import kotlinx.coroutines.launch
  *     (ARM_SILENCE)      (ARM_TIMEOUT)          │
  *          ↓                 ↓                  ↓
  *      SPEAKING ────────> WAKE_LISTENING <──────┘
- *   （播报中，麦克风交还 NONE，
- *     半双工，绝不在说话时听）
+ *   （播报中，麦克风归本地 KWS：
+ *     只听那四个字，云端 ASR 关闭。
+ *     听到 → 掐断播报，直接进 ARMED＝打断）
  *          │ 播完
  *          ↓
  *   FOLLOW_UP（跟进窗口：不用再说唤醒词，超时回 WAKE_LISTENING）
@@ -49,6 +50,8 @@ class WakeMachine(
     private val onCloseAsr: () -> Unit,
     /** 一句完整命令收齐，交出去。 */
     private val onCommand: (String) -> Unit,
+    /** 打断：用户在播报期间喊了唤醒词，掐掉正在播的音频。 */
+    private val onStopSpeaking: () -> Unit,
     /** 状态变化，供 UI/日志观察。 */
     private val onState: (State) -> Unit,
 ) {
@@ -95,9 +98,18 @@ class WakeMachine(
         to(State.WAKE_LISTENING)
     }
 
-    /** 本地 KWS 命中，或用户手动点按。 */
+    /**
+     * 本地 KWS 命中，或用户手动点按。
+     *
+     * 在 SPEAKING 状态下命中 = **打断**：小C 还在说话，你插话把它掐了。
+     * 这是"随时能打断"这个体感的来源。之所以只认唤醒词而不是任意人声：
+     * 手机的麦和喇叭在同一台设备上，播报时开麦必然听见自己，而 Android 的
+     * 硬件 AEC 在媒体音频路(A2DP)上拿不到参考信号、等于没开。用只认四个字的
+     * 本地 KWS 当触发器，既躲开自激，又不必把音频送上云端。
+     */
     fun onWake() {
         if (isArmed) return
+        if (state == State.SPEAKING) onStopSpeaking()
         arm()
     }
 
@@ -154,16 +166,20 @@ class WakeMachine(
     }
 
     /**
-     * 开始播报。半双工：整段播报期间麦克风必须是 NONE。
+     * 开始播报。麦克风交给本地 KWS —— 在听，但**只听那四个字**，不连云端。
      *
-     * 之前的自激循环就出在这里——回复文本和回复音频是两条独立的流，文本一到就
-     * 起了个 800ms 定时器去重开麦，而那时音频才刚开始念。现在播报期间的状态是
-     * 显式的 SPEAKING，[onHeard] 在这个状态下直接忽略，重开麦只能由 [onSpoken]
-     * 触发，物理上不可能在说话时听。
+     * 关键在于"听什么"而不是"听不听"：
+     *   · 云端 ASR 在播报期间必须关着，否则它会把小C自己的声音转成文本再发回
+     *     去问小C，一轮套一轮（这就是之前那个自激循环）。
+     *   · 本地 KWS 只输出"是/不是健康顺利"，物理上产不出可回灌的文本，
+     *     所以开着是安全的。
+     *
+     * [allowBargeIn]=false 用于回复文本本身含唤醒词的场合（如小C说"祝你健康
+     * 顺利"），此时闭麦，免得它把自己打断。
      */
-    fun onSpeaking() {
+    fun onSpeaking(allowBargeIn: Boolean = true) {
         cancelTimers()
-        onMic(MicOwner.NONE)
+        onMic(if (allowBargeIn) MicOwner.KWS else MicOwner.NONE)
         to(State.SPEAKING)
     }
 
