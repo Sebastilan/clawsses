@@ -87,27 +87,14 @@ class VoiceXiaocService : Service() {
     val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
 
     private var asr: TencentAsrClient? = null
-    private val finals = StringBuilder()     // accumulated finalized sentences
-
-    // Wake-word (P3): continuous ASR session state.
-    private var wakeArmed = false            // true = wake word heard, capturing the command sentence
-    private var wakeArmTimeout: Job? = null  // "said nothing yet" timeout — falls back to passive listening
-    private var armSilenceSubmit: Job? = null // "stopped talking" debounce — submits the accumulated command
-    private var wakeSessionActive = false
 
     /**
-     * Who the microphone currently belongs to. Exactly one owner at a time.
-     *
-     * This replaces a `kwsListening` boolean that 9 different call sites could
-     * invalidate: 8 of them called `audio.stop()` directly without clearing the
-     * flag, so after any TTS playback the flag said "KWS is listening" while the
-     * mic was actually closed — and `startLocalKwsListening()`'s guard then
-     * early-returned forever, leaving the app deaf to the wake word until some
-     * unrelated timeout happened to reset it. Routing every transition through
-     * [setMicOwner] makes that class of bug unrepresentable.
+     * 唤醒/录音的全部时序与状态都归 [WakeMachine]（WakeMachine.kt，带 12 个单测）。
+     * 本 Service 只负责把状态机的意图落到真实设备上：开关麦克风、开关云端 ASR、
+     * 掐播报、把收齐的命令发出去。状态机不碰 Android API，Service 不做时序判断。
      */
-    private enum class MicOwner { NONE, KWS, ASR }
-    private var micOwner = MicOwner.NONE
+    private lateinit var machine: WakeMachine
+    private var micOwner = WakeMachine.MicOwner.NONE
 
     override fun onCreate() {
         super.onCreate()
@@ -118,6 +105,17 @@ class VoiceXiaocService : Service() {
         tts = TtsPlayer(this)
         audio = AudioCapture(this)
         kws = KwsDetector(this)
+        machine = WakeMachine(
+            scope = scope,
+            armTimeoutMs = WAKE_ARM_TIMEOUT_MS,
+            silenceSubmitMs = ARM_SILENCE_MS,
+            onMic = ::applyMicOwner,
+            onOpenAsr = ::openAsr,
+            onCloseAsr = ::closeAsr,
+            onCommand = ::sendCommand,
+            onStopSpeaking = { tts.stop() },
+            onState = ::onMachineState,
+        )
         ws = WsClient(scope).apply {
             host = config.host
             port = config.port
@@ -146,31 +144,25 @@ class VoiceXiaocService : Service() {
             ws.replies.collect { r ->
                 _lastReply.value = r.text
                 _voiceState.value = VoiceState.Reply(r.text)
-                // Follow-up window: re-arm silently (no wake word needed) so the
-                // user can keep talking right after hearing the answer. If they
-                // don't say anything, arm()'s own timeout drops back to passive
-                // wake-listening.
-                scope.launch {
-                    kotlinx.coroutines.delay(800)
-                    if (wakeSessionActive && !wakeArmed) {
-                        startCommandCapture()
-                        arm(chime = false)
-                    }
-                }
+                // 只更新 UI。跟进窗口由状态机在播报结束(onSpoken)时开，Service 不
+                // 自己起定时器抢麦——之前正是这里的 800ms 定时器在播报刚开始就重开
+                // 麦克风，造成 ASR 听见小C自己的声音的自激循环。
             }
         }
         scope.launch {
             ws.ttsAudio.collect { a ->
+                // 回复文本里若正好含唤醒词(如"祝你健康顺利")，播报期间闭麦，
+                // 免得小C把自己打断。
+                machine.onSpeaking(allowBargeIn = !a.text.contains(WAKE_WORD))
                 // Half-duplex: pause the mic for the duration of playback. AEC
                 // alone didn't reliably stop the phone hearing its own TTS
                 // through the speaker and re-transcribing it as user speech
                 // (self-talk echo loop) — the surest fix is to just not listen
                 // while we're talking.
-                audio.stop()
                 tts.playBase64(a.base64, a.format, onDone = {
                     scope.launch {
-                        kotlinx.coroutines.delay(300) // let room echo/reverb tail settle
-                        resumeMicIfNeeded()
+                        kotlinx.coroutines.delay(300) // 等房间混响拖尾散掉
+                        machine.onSpoken()
                     }
                 })
             }
@@ -214,9 +206,7 @@ class VoiceXiaocService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
-        wakeSessionActive = false
-        wakeArmTimeout?.cancel()
-        armSilenceSubmit?.cancel()
+        machine.stop()
         audio.cleanup()
         asr?.cancel(); asr = null
         kws.release()
@@ -247,13 +237,13 @@ class VoiceXiaocService : Service() {
      * armed, submits early instead of waiting out the silence debounce.
      */
     fun toggleListening() {
-        if (!wakeSessionActive) return
-        if (wakeArmed) {
-            submitArmedCommand()
-        } else {
-            ws.sendLog("info", "VoiceService", "manual tap force-arm")
-            startCommandCapture()
-            arm()
+        when (machine.state) {
+            WakeMachine.State.IDLE -> return
+            WakeMachine.State.ARMED, WakeMachine.State.FOLLOW_UP -> machine.submit()
+            else -> {
+                ws.sendLog("info", "VoiceService", "manual tap = force wake")
+                machine.onWake()
+            }
         }
     }
 
@@ -265,57 +255,35 @@ class VoiceXiaocService : Service() {
      * "健康顺利" keyword). Replaces the old approach of running continuous
      * cloud ASR and string-matching every final for the wake word.
      */
-    private fun startWakeSession() {
-        if (wakeSessionActive) return
-        wakeSessionActive = true
-        wakeArmed = false
-        finals.setLength(0)
-        _voiceState.value = VoiceState.WakeListening
-        setMicOwner(MicOwner.KWS)
-    }
+    private fun startWakeSession() = machine.start()
 
-    /**
-     * The single place the microphone changes hands. Always stops first, so the
-     * previous owner's read loop is gone before the next one starts; [micOwner]
-     * therefore always describes reality.
-     *
-     * [MicOwner.KWS]  — local offline wake-word spotting, audio never leaves the phone.
-     * [MicOwner.ASR]  — streaming to cloud ASR, only after a confirmed wake.
-     * [MicOwner.NONE] — mic closed (idle, or half-duplex pause while we're talking).
-     */
-    private fun setMicOwner(owner: MicOwner) {
+    // ══ 设备执行层 ══════════════════════════════════════════════════
+    // 以下都是 WakeMachine 的"手脚"：状态机决定何时做什么，这里只负责怎么做。
+    // 任何时序判断都不该出现在这一层——那是状态机的职责，且有单测覆盖。
+
+    /** 切换麦克风归属。先停后开，[micOwner] 因此永远描述真实情况。 */
+    private fun applyMicOwner(owner: WakeMachine.MicOwner) {
         if (micOwner == owner && audio.isRecording.value) return
         audio.stop()
         micOwner = owner
         when (owner) {
-            MicOwner.NONE -> Unit
-            MicOwner.KWS -> audio.startPcm(scope) { pcm ->
+            WakeMachine.MicOwner.NONE -> Unit
+            WakeMachine.MicOwner.KWS -> audio.startPcm(scope) { pcm ->
                 kws.feed(pcm)?.let { hit ->
                     ws.sendLog("info", "KwsDetector", "local wake hit: $hit")
-                    scope.launch { onWakeDetected() }
+                    scope.launch { machine.onWake() }
                 }
             }
-            MicOwner.ASR -> {
+            WakeMachine.MicOwner.ASR -> {
                 val client = asr
-                if (client == null) micOwner = MicOwner.NONE
+                if (client == null) micOwner = WakeMachine.MicOwner.NONE
                 else audio.startPcm(scope) { pcm -> client.sendPcm(pcm) }
             }
         }
     }
 
-    /** Local KWS fired — open a cloud ASR session dedicated to capturing the command that follows. */
-    private fun onWakeDetected() {
-        startCommandCapture()
-        arm()
-    }
-
-    /**
-     * Open a Tencent ASR session purely for command capture (wake word already
-     * confirmed locally, so every final here is real command content — no more
-     * text-matching against WAKE_WORD). Closes itself once [submitArmedCommand]
-     * fires; the caller restarts local KWS listening afterwards.
-     */
-    private fun startCommandCapture() {
+    /** 开一路腾讯云 ASR 专门录这句命令（唤醒已由本地 KWS 确认）。 */
+    private fun openAsr() {
         if (asr != null) return
         val client = TencentAsrClient(
             secretId = config.asrSecretId,
@@ -327,116 +295,53 @@ class VoiceXiaocService : Service() {
         asr = client
         client.start(object : TencentAsrClient.Listener {
             override fun onReady() {
-                ws.sendLog("info", "TencentAsr", "command capture ready — streaming mic PCM")
-                resumeMicIfNeeded()
+                ws.sendLog("info", "TencentAsr", "command capture ready")
+                if (asr === client) applyMicOwner(WakeMachine.MicOwner.ASR)
             }
             override fun onPartial(text: String) {
-                _voiceState.value = VoiceState.Recognizing(finals.toString() + text)
-                if (text.isNotBlank()) pushSilenceSubmit() // still talking — postpone the submit
+                _voiceState.value = VoiceState.Recognizing(text)
+                machine.onHeard(text, isFinal = false)
             }
             override fun onFinal(text: String) {
                 ws.sendLog("info", "TencentAsr", "command final: $text")
-                finals.append(text)
-                pushSilenceSubmit()
+                machine.onHeard(text, isFinal = true)
             }
             override fun onCompleted() {
-                ws.sendLog("info", "TencentAsr", "command capture completed")
-                asr = null
-                if (wakeArmed) submitArmedCommand()
-                else backToWakeListening()
+                if (asr === client) { asr = null; machine.submit() }
             }
             override fun onError(msg: String) {
                 ws.sendLog("error", "TencentAsr", "command capture error: $msg")
+                if (asr !== client) return
                 asr = null
-                wakeArmed = false
-                if (wakeSessionActive) {
-                    scope.launch { kotlinx.coroutines.delay(1500); backToWakeListening() }
-                } else {
-                    setMicOwner(MicOwner.NONE)
-                    _voiceState.value = VoiceState.Error(msg)
-                }
+                _voiceState.value = VoiceState.Error(msg)
+                scope.launch { kotlinx.coroutines.delay(1500); machine.onError() }
             }
         })
     }
 
-    /** Drop back to passive local wake-word listening (mic stays on-device). */
-    private fun backToWakeListening() {
-        wakeArmTimeout?.cancel(); wakeArmTimeout = null
-        armSilenceSubmit?.cancel(); armSilenceSubmit = null
-        wakeArmed = false
-        asr?.cancel(); asr = null
-        if (wakeSessionActive) {
-            setMicOwner(MicOwner.KWS)
-            if (_voiceState.value !is VoiceState.Reply) _voiceState.value = VoiceState.WakeListening
-        } else {
-            setMicOwner(MicOwner.NONE)
-        }
+    private fun closeAsr() {
+        asr?.cancel()
+        asr = null
     }
 
-    /** Re-open the mic after a half-duplex pause (TTS playback), for whoever should own it now. */
-    private fun resumeMicIfNeeded() {
-        if (audio.isRecording.value) return
-        if (asr != null) setMicOwner(MicOwner.ASR)
-        else if (wakeSessionActive && !wakeArmed) setMicOwner(MicOwner.KWS)
+    /** 一句完整命令收齐 → 发给网关。 */
+    private fun sendCommand(text: String) {
+        ws.sendLog("info", "VoiceService", "wake command -> gateway: $text")
+        _voiceState.value = VoiceState.Sent(text)
+        _lastReply.value = ""
+        ws.sendAsrText(text)
     }
 
-    /** Enter "armed" state: wake heard (or a follow-up window), capturing the next command. */
-    private fun arm(chime: Boolean = true) {
-        if (chime) {
-            ws.sendWake(WAKE_WORD, 1.0)
-            tts.stop()
-            // Instant "我在" ack so the user knows the wake registered without
-            // waiting on a full CC round-trip — a bundled pre-synthesized Doubao
-            // clip (zero network latency), not live TTS. Half-duplex: pause the
-            // mic for this brief playback so it doesn't get picked up as speech.
-            setMicOwner(MicOwner.NONE)
-            tts.playRaw(R.raw.wake_ack, onDone = {
-                scope.launch {
-                    kotlinx.coroutines.delay(150)
-                    resumeMicIfNeeded()
-                }
-            })
+    /** 状态机状态 → UI 状态 + 远程日志（维度3：状态自报）。 */
+    private fun onMachineState(state: WakeMachine.State) {
+        ws.sendLog("info", "WakeMachine", "state -> $state")
+        when (state) {
+            WakeMachine.State.IDLE -> _voiceState.value = VoiceState.Idle
+            WakeMachine.State.WAKE_LISTENING -> _voiceState.value = VoiceState.WakeListening
+            WakeMachine.State.ARMED, WakeMachine.State.FOLLOW_UP ->
+                _voiceState.value = VoiceState.Listening
+            WakeMachine.State.SPEAKING -> Unit   // 播报中，UI 已由 Reply 状态占用
         }
-        finals.setLength(0)
-        wakeArmed = true
-        _voiceState.value = VoiceState.Listening
-        armSilenceSubmit?.cancel(); armSilenceSubmit = null
-        wakeArmTimeout?.cancel()
-        wakeArmTimeout = scope.launch {
-            kotlinx.coroutines.delay(WAKE_ARM_TIMEOUT_MS)
-            if (wakeArmed && finals.isEmpty()) {
-                ws.sendLog("info", "VoiceService", "wake arm timed out (nothing said), back to local KWS listening")
-                _voiceState.value = VoiceState.WakeListening
-                backToWakeListening()
-            }
-        }
-    }
-
-    /** (Re)start the "user stopped talking" debounce that triggers [submitArmedCommand]. */
-    private fun pushSilenceSubmit() {
-        wakeArmTimeout?.cancel() // they've started talking — the "said nothing" timeout no longer applies
-        armSilenceSubmit?.cancel()
-        armSilenceSubmit = scope.launch {
-            kotlinx.coroutines.delay(ARM_SILENCE_MS)
-            submitArmedCommand()
-        }
-    }
-
-    /** Send the accumulated command text (since arming) to the gateway, disarm, and go back to local KWS listening. */
-    private fun submitArmedCommand() {
-        wakeArmTimeout?.cancel(); wakeArmTimeout = null
-        armSilenceSubmit?.cancel(); armSilenceSubmit = null
-        val text = finals.toString().trim()
-        finals.setLength(0)
-        if (text.isBlank()) {
-            _voiceState.value = VoiceState.WakeListening
-        } else {
-            ws.sendLog("info", "VoiceService", "wake command -> gateway: $text")
-            _voiceState.value = VoiceState.Sent(text)
-            _lastReply.value = ""
-            ws.sendAsrText(text)
-        }
-        backToWakeListening()
     }
 
     private fun installCrashReporter() {
