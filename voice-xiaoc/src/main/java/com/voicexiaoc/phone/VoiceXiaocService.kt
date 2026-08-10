@@ -37,7 +37,10 @@ class VoiceXiaocService : Service() {
         private const val NOTIF_ID = 1
         private const val ACTION_INSTALL_STATUS = "com.voicexiaoc.phone.INSTALL_STATUS"
         private const val WAKE_WORD = "健康顺利" // local sherpa-onnx KWS keyword, see assets/kws-model/keywords.txt
-        private const val WAKE_ARM_TIMEOUT_MS = 8000L  // armed but said nothing at all yet
+        // 唤醒后(或答完话的跟进窗口内)等用户开口的时间。这段时间里云端 ASR 是开着的,
+        // 车里旁边一直有人说话,窗口越长踩中家人对话、把它当指令上云的概率越高。
+        // 2026-08-10 统帅定:8s → 5s。
+        private const val WAKE_ARM_TIMEOUT_MS = 5000L  // armed but said nothing at all yet
         private const val ARM_SILENCE_MS = 2500L       // armed, said something, now paused — submit
 
         @Volatile var instance: VoiceXiaocService? = null
