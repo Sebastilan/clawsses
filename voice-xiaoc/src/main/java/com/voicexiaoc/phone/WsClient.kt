@@ -196,6 +196,27 @@ class WsClient(private val scope: CoroutineScope) {
         return delivered
     }
 
+    /**
+     * 上报位置。坐标是 WGS-84（Android 原生），GCJ-02 由网关换算。
+     * 不进发件箱：位置是"当前值"，补发一个几分钟前的点没有意义，反而会让
+     * CC 拿到过期位置当实时用；丢了等下一个周期就行。
+     */
+    fun sendLocation(
+        lat: Double, lon: Double, accuracy: Float?, speed: Float?,
+        bearing: Float?, altitude: Double?, provider: String?, fixedAt: Long,
+    ) {
+        val m = mutableMapOf<String, Any>(
+            "type" to "location", "ts" to now(),
+            "lat" to lat, "lon" to lon, "fixedAt" to fixedAt
+        )
+        accuracy?.let { m["accuracy"] = it }
+        speed?.let { m["speed"] = it }
+        bearing?.let { m["bearing"] = it }
+        altitude?.let { m["altitude"] = it }
+        provider?.let { m["provider"] = it }
+        send(gson.toJson(m))
+    }
+
     /** End the current session (user said "拜拜" / timeout). */
     fun sendSleep(reason: String = "user_bye") {
         send(gson.toJson(mapOf("type" to "sleep", "ts" to now(), "reason" to reason)))

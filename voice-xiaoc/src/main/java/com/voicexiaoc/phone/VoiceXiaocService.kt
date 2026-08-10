@@ -77,6 +77,7 @@ class VoiceXiaocService : Service() {
     lateinit var versionChecker: VersionChecker; private set
     lateinit var audio: AudioCapture; private set
     lateinit var kws: KwsDetector; private set
+    lateinit var locator: LocationReporter; private set
 
     // Last reply text surfaced to the UI.
     private val _lastReply = MutableStateFlow("")
@@ -105,6 +106,16 @@ class VoiceXiaocService : Service() {
         tts = TtsPlayer(this)
         audio = AudioCapture(this)
         kws = KwsDetector(this)
+        locator = LocationReporter(this) { loc ->
+            ws.sendLocation(
+                lat = loc.latitude, lon = loc.longitude,
+                accuracy = if (loc.hasAccuracy()) loc.accuracy else null,
+                speed = if (loc.hasSpeed()) loc.speed else null,
+                bearing = if (loc.hasBearing()) loc.bearing else null,
+                altitude = if (loc.hasAltitude()) loc.altitude else null,
+                provider = loc.provider, fixedAt = loc.time,
+            )
+        }
         machine = WakeMachine(
             scope = scope,
             armTimeoutMs = WAKE_ARM_TIMEOUT_MS,
@@ -124,6 +135,7 @@ class VoiceXiaocService : Service() {
             deviceId = "phone-${Build.MODEL}".replace(" ", "_")
         }
         audio.onLog = { level, msg -> ws.sendLog(level, "AudioCapture", msg) }
+        locator.onLog = { level, msg -> ws.sendLog(level, "LocationReporter", msg) }
         tts.onLog = { level, msg -> ws.sendLog(level, "TtsPlayer", msg) }
         installCrashReporter()
         ota = OtaUpdater(this, scope)
@@ -182,6 +194,7 @@ class VoiceXiaocService : Service() {
         // P3: mic starts listening continuously right away, passively waiting
         // to hear the wake word — no button tap needed for hands-free use.
         if (config.asrConfigured) startWakeSession()
+        locator.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -208,6 +221,7 @@ class VoiceXiaocService : Service() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
         machine.stop()
+        locator.stop()
         audio.cleanup()
         asr?.cancel(); asr = null
         kws.release()
@@ -217,6 +231,9 @@ class VoiceXiaocService : Service() {
         scope.cancel()
         instance = null
     }
+
+    /** 用户在界面上授予定位权限后调用，无需重启服务即可开始上报。 */
+    fun onLocationPermissionGranted() = locator.start()
 
     /** 用户主动确认后才安装已发现的新版本(见 onCreate 里为什么不自动装)。 */
     fun installPendingUpdate() {

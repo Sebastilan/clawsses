@@ -82,6 +82,12 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED) needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        // 定位：让任意 CC 都能回答"统帅现在在哪"。不申请就永远拿不到位置。
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
         if (needed.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
         }
@@ -111,6 +117,11 @@ class MainActivity : ComponentActivity() {
             .joinToString { (p, r) -> "$p=${if (r == PackageManager.PERMISSION_GRANTED) "granted" else "denied"}" }
         Log.i(TAG, "permission result: $granted")
         VoiceXiaocService.instance?.ws?.sendLog("info", "MainActivity", "permission result: $granted")
+        // 刚授予定位就立刻开始上报，不用重启 APP
+        val locOk = permissions.zip(grantResults.toTypedArray()).any { (p, r) ->
+            p == Manifest.permission.ACCESS_FINE_LOCATION && r == PackageManager.PERMISSION_GRANTED
+        }
+        if (locOk) VoiceXiaocService.instance?.onLocationPermissionGranted()
     }
 }
 
