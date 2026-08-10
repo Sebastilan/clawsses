@@ -33,6 +33,8 @@ class WsClient(private val scope: CoroutineScope) {
         private const val TAG = "WsClient"
         private const val RECONNECT_DELAY_MS = 3000L
         private const val PING_INTERVAL_MS = 30_000L
+        private const val PONG_TIMEOUT_MS = 75_000L   // 2.5 个心跳周期没回音 = 连接已死
+        private const val OUTBOX_TTL_MS = 60_000L     // 超过 1 分钟的命令不再补发
         const val CLIENT_VERSION = "0.1.0"
     }
 
@@ -49,6 +51,21 @@ class WsClient(private val scope: CoroutineScope) {
     private var reconnectJob: Job? = null
     private var pingJob: Job? = null
     private var shouldReconnect = false
+
+    /**
+     * 最近一次收到 pong 的时刻。移动网络的 NAT 会悄悄掐掉空闲 TCP，形成"半开连接"：
+     * socket 看着还在，send() 也不报错(数据进了 OkHttp 缓冲区)，要等 TCP 重传超时
+     * 好几分钟才暴露。2026-08-10 实测就是这样丢掉一整句话：手机以为连着，统帅说完
+     * 了、也识别出来了，发出去却进了黑洞，网关侧一条日志都没有。
+     * 光发 ping 不看回音是查不出来的——之前 pong 收到只打了行 Log.d 就扔了。
+     */
+    @Volatile private var lastPongAt = 0L
+
+    /**
+     * 发件箱：连接不可用时暂存统帅真正说的话(asr_text)，连上就补发。
+     * 只存命令，不存日志——日志丢了无所谓，他说的话丢了就是"我说了它没反应"。
+     */
+    private val outbox = java.util.concurrent.ConcurrentLinkedQueue<Pair<Long, String>>()
 
     // Connection state (true once `connected` frame received, or socket open if no auth)
     private val _connected = MutableStateFlow(false)
@@ -109,7 +126,9 @@ class WsClient(private val scope: CoroutineScope) {
                 // The gateway may reply `connected`; but even without auth the
                 // socket is usable, so optimistically mark connected on open.
                 _connected.value = true
+                lastPongAt = System.currentTimeMillis()
                 startPingLoop()
+                flushOutbox()
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -165,14 +184,16 @@ class WsClient(private val scope: CoroutineScope) {
     }
 
     /** Send a recognized utterance. Gateway only acts on final results. */
-    fun sendAsrText(text: String, final: Boolean = true, lang: String = "zh-CN"): String {
+    fun sendAsrText(text: String, final: Boolean = true, lang: String = "zh-CN"): Boolean {
         val id = "u-${nextId()}"
-        send(gson.toJson(mapOf(
+        // queueIfDown：统帅说的话是唯一不能丢的东西。连接不可用时进发件箱，
+        // 3 秒后重连自动补发；只有超过 TTL 才真丢。
+        val delivered = send(gson.toJson(mapOf(
             "type" to "asr_text", "id" to id, "ts" to now(),
             "text" to text, "final" to final, "lang" to lang
-        )))
-        Log.i(TAG, "Sent asr_text: ${text.take(50)}")
-        return id
+        )), queueIfDown = true)
+        Log.i(TAG, "asr_text delivered=$delivered: ${text.take(50)}")
+        return delivered
     }
 
     /** End the current session (user said "拜拜" / timeout). */
@@ -242,7 +263,7 @@ class WsClient(private val scope: CoroutineScope) {
                         tts = tts
                     ))
                 }
-                "pong" -> Log.d(TAG, "pong")
+                "pong" -> lastPongAt = System.currentTimeMillis()
                 "error" -> {
                     val code = json.get("code")?.asString ?: "?"
                     val msg = json.get("message")?.asString ?: ""
@@ -277,13 +298,54 @@ class WsClient(private val scope: CoroutineScope) {
         pingJob = scope.launch {
             while (isActive) {
                 delay(PING_INTERVAL_MS)
-                if (_connected.value) sendPing()
+                if (!_connected.value) continue
+                // 看门狗：连着两个半心跳周期没等到 pong，判定这条连接已经死了(半开)，
+                // 主动重连。不这样做的话，要等 TCP 重传超时几分钟才暴露，
+                // 而这几分钟里统帅说的每一句都会掉进黑洞。
+                val silence = System.currentTimeMillis() - lastPongAt
+                if (silence > PONG_TIMEOUT_MS) {
+                    Log.w(TAG, "no pong for ${silence}ms — connection is half-open, forcing reconnect")
+                    _status.value = "心跳超时，重连中…"
+                    onDisconnected("pong timeout")
+                    continue
+                }
+                sendPing()
             }
         }
     }
 
-    private fun send(json: String) {
-        webSocket?.send(json) ?: Log.w(TAG, "not connected, dropped: ${json.take(80)}")
+    /** 连上后把攒着的命令补发出去。太旧的丢弃——迟到几分钟的问题再答就是打扰。 */
+    private fun flushOutbox() {
+        val now = System.currentTimeMillis()
+        var sent = 0
+        var stale = 0
+        while (true) {
+            val (ts, json) = outbox.poll() ?: break
+            if (now - ts > OUTBOX_TTL_MS) { stale++; continue }
+            webSocket?.send(json); sent++
+        }
+        if (sent > 0 || stale > 0) {
+            Log.i(TAG, "outbox flushed: sent=$sent stale=$stale")
+            sendLog("info", "WsClient", "补发离线期间的命令: 成功 $sent 条, 过期丢弃 $stale 条")
+        }
+    }
+
+    /**
+     * 发一帧。[queueIfDown]=true 的帧(统帅说的话)在连接不可用时进发件箱等补发，
+     * 其余(日志/心跳)直接丢。
+     *
+     * @return true = 已交给 socket；false = 没发出去(已入队或已丢弃)
+     */
+    private fun send(json: String, queueIfDown: Boolean = false): Boolean {
+        val ws = webSocket
+        if (ws != null && _connected.value) return ws.send(json)
+        if (queueIfDown) {
+            outbox.add(System.currentTimeMillis() to json)
+            Log.w(TAG, "not connected — queued for retry: ${json.take(80)}")
+        } else {
+            Log.w(TAG, "not connected, dropped: ${json.take(80)}")
+        }
+        return false
     }
 
     private fun nextId(): String = msgId.incrementAndGet().toString()

@@ -340,9 +340,29 @@ class VoiceXiaocService : Service() {
     /** 一句完整命令收齐 → 发给网关。 */
     private fun sendCommand(text: String) {
         ws.sendLog("info", "VoiceService", "wake command -> gateway: $text")
-        _voiceState.value = VoiceState.Sent(text)
         _lastReply.value = ""
-        ws.sendAsrText(text)
+        val delivered = ws.sendAsrText(text)
+        if (delivered) {
+            _voiceState.value = VoiceState.Sent(text)
+        } else {
+            // 别再让统帅对着黑洞说话。2026-08-10 就是这样：唤醒成功、识别成功，
+            // 但连接是半开的，这句直接进了黑洞，屏幕上没提示、也没声音，
+            // 表现就是"我说了它没反应"。现在明确告知，并已入发件箱等重连补发。
+            _voiceState.value = VoiceState.Error("网络断开，这句已暂存，连上后自动补发")
+            beepFailure()
+        }
+    }
+
+    /** 命令没能立刻送达时的提示音。开车时看不了屏幕，得让耳朵知道。 */
+    private fun beepFailure() {
+        try {
+            val tone = android.media.ToneGenerator(
+                android.media.AudioManager.STREAM_MUSIC, 60)
+            tone.startTone(android.media.ToneGenerator.TONE_PROP_NACK, 300)
+            scope.launch { kotlinx.coroutines.delay(600); tone.release() }
+        } catch (e: Exception) {
+            ws.sendLog("warn", "VoiceService", "beepFailure 失败: ${e.message}")
+        }
     }
 
     /** 状态机状态 → UI 状态 + 远程日志（维度3：状态自报）。 */
