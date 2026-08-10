@@ -142,7 +142,7 @@ private fun StatusScreen(svc: VoiceXiaocService?, versionName: String, versionCo
             Field("状态", status)
             Field("网关", svc?.let { "${it.config.host}:${it.config.port}" } ?: "—")
             Field("版本", "v$versionName (code $versionCode)")
-            Field("OTA", otaStateText(otaState))
+            OtaField(otaState) { svc?.installPendingUpdate() }
 
             // ── Push-to-talk (P2a simulated wake) ─────────────────────
             VoiceStatusCard(voice)
@@ -201,6 +201,24 @@ private fun TalkButton(active: Boolean, enabled: Boolean, onClick: () -> Unit) {
     }
 }
 
+/**
+ * OTA 状态行。发现新版本时整行可点 —— 这是安装新版本的唯一入口。
+ *
+ * v0.6.0 把"开机自动装"关掉了(2026-08-09 曾在统帅夜间开车时把安装确认框弹到
+ * 屏幕上)，却忘了在界面上给出手动确认的入口，结果那一版的 OTA 直接成了死路：
+ * 能看到"发现新版本"，但没有任何地方可以点。只能浏览器下 APK 手动装。
+ */
+@Composable
+private fun OtaField(state: VersionChecker.State, onInstall: () -> Unit) {
+    val can = otaClickable(state)
+    Column(modifier = if (can) Modifier.clickable { onInstall() } else Modifier) {
+        Text("OTA", color = Color(0xFF888892), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+        Text(otaStateText(state),
+            color = if (can) Color(0xFF7CFF9B) else Color(0xFFE6E6EA),
+            fontSize = 16.sp, fontFamily = FontFamily.Monospace)
+    }
+}
+
 @Composable
 private fun Field(label: String, value: String) {
     Column {
@@ -209,11 +227,14 @@ private fun Field(label: String, value: String) {
     }
 }
 
+/** 发现新版本时才可点：点一下才真正下载安装。见 VoiceXiaocService.installPendingUpdate。 */
+private fun otaClickable(s: VersionChecker.State) = s is VersionChecker.State.UpdateAvailable
+
 private fun otaStateText(s: VersionChecker.State): String = when (s) {
     is VersionChecker.State.Idle -> "空闲"
     is VersionChecker.State.Checking -> "检查更新中…"
     is VersionChecker.State.UpToDate -> "已是最新"
-    is VersionChecker.State.UpdateAvailable -> "发现新版本 v${s.manifest.versionName}"
+    is VersionChecker.State.UpdateAvailable -> "发现新版本 v${s.manifest.versionName} —— 点这里安装"
     is VersionChecker.State.Updating -> "更新中：${s.progress}"
     is VersionChecker.State.Failed -> "检查失败：${s.reason}"
 }

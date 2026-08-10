@@ -54,6 +54,8 @@ class WakeMachine(
     private val onStopSpeaking: () -> Unit,
     /** 状态变化，供 UI/日志观察。 */
     private val onState: (State) -> Unit,
+    /** 关键决策的诊断说明（为什么发/为什么不发），回传网关日志。 */
+    private val onDiag: (String) -> Unit = {},
 ) {
     enum class MicOwner { NONE, KWS, ASR }
 
@@ -63,6 +65,15 @@ class WakeMachine(
         private set
 
     private val heard = StringBuilder()
+
+    /**
+     * 最近一次识别中间结果。腾讯的 final(slice_type=2) 依赖它自己的断句判定，
+     * 实测存在"partial 一直来、final 始终不来"的情况(2026-08-10 首次唤醒即遇到:
+     * ASR 明明听见了、状态机等到超时也没拿到一个字)。只认 final 就会整句丢掉,
+     * 所以提交时把最后一段 partial 折进来兜底。
+     */
+    private var lastPartial = ""
+
     private var armTimer: Job? = null
     private var silenceTimer: Job? = null
 
@@ -93,6 +104,7 @@ class WakeMachine(
     fun toWakeListening() {
         cancelTimers()
         heard.setLength(0)
+        lastPartial = ""
         onCloseAsr()
         onMic(MicOwner.KWS)
         to(State.WAKE_LISTENING)
@@ -127,7 +139,10 @@ class WakeMachine(
         to(if (followUp) State.FOLLOW_UP else State.ARMED)
         armTimer = scope.launch {
             delay(armTimeoutMs)
-            if (isArmed && heard.isEmpty()) toWakeListening()
+            if (isArmed && heard.isEmpty() && lastPartial.isEmpty()) {
+                onDiag("arm 超时 ${armTimeoutMs}ms 内一个字都没听到，回常听")
+                toWakeListening()
+            }
         }
     }
 
@@ -138,7 +153,12 @@ class WakeMachine(
     /** ASR 吐出一段文本（中间态或最终态）。每次都把「说完了」的判定往后推。 */
     fun onHeard(text: String, isFinal: Boolean) {
         if (!isArmed) return
-        if (isFinal) heard.append(text)
+        if (isFinal) {
+            heard.append(text)
+            lastPartial = ""       // 这段已经定稿，不再需要兜底
+        } else {
+            lastPartial = text
+        }
         if (text.isBlank()) return
         armTimer?.cancel(); armTimer = null   // 已经开口了，「没开口」超时不再适用
         silenceTimer?.cancel()
@@ -152,8 +172,12 @@ class WakeMachine(
     fun submit() {
         if (!isArmed) return
         cancelTimers()
-        val text = heard.toString().trim().takeUnless { isJunk(it) } ?: ""
+        val raw = (heard.toString() + lastPartial).trim()
+        val text = raw.takeUnless { isJunk(it) } ?: ""
+        onDiag("submit: final=${heard.length}字 partial兜底=${lastPartial.length}字 -> " +
+               if (text.isEmpty()) "空，不发" else "${text.length}字，发出")
         heard.setLength(0)
+        lastPartial = ""
         onCloseAsr()
         // 交出去之后立刻闭麦：等待 CC 回复期间没有任何理由继续听。
         onMic(MicOwner.NONE)

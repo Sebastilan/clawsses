@@ -115,6 +115,7 @@ class VoiceXiaocService : Service() {
             onCommand = ::sendCommand,
             onStopSpeaking = { tts.stop() },
             onState = ::onMachineState,
+            onDiag = { ws.sendLog("info", "WakeMachine", it) },
         )
         ws = WsClient(scope).apply {
             host = config.host
@@ -299,6 +300,9 @@ class VoiceXiaocService : Service() {
                 if (asr === client) applyMicOwner(WakeMachine.MicOwner.ASR)
             }
             override fun onPartial(text: String) {
+                // 记下来：之前 partial 完全不上报，导致"ASR 到底听没听见"是盲区，
+                // 只能靠状态机超时了几秒去反推。内容会被网关脱敏成字数。
+                ws.sendLog("debug", "TencentAsr", "partial: $text")
                 _voiceState.value = VoiceState.Recognizing(text)
                 machine.onHeard(text, isFinal = false)
             }
@@ -307,6 +311,7 @@ class VoiceXiaocService : Service() {
                 machine.onHeard(text, isFinal = true)
             }
             override fun onCompleted() {
+                ws.sendLog("info", "TencentAsr", "stream completed (server final=1)")
                 if (asr === client) { asr = null; machine.submit() }
             }
             override fun onError(msg: String) {
@@ -319,9 +324,17 @@ class VoiceXiaocService : Service() {
         })
     }
 
+    /**
+     * 优雅收尾：先发 end 标记(finish)让腾讯把攒着的最后一句吐出来，再延时硬关。
+     * 之前直接 cancel() 会把待定稿的句子连同连接一起丢掉 —— 腾讯的 final
+     * (slice_type=2) 本来就依赖它自己的断句判定，再被我们提前掐断，就出现了
+     * "听见了但一个字都没拿到"。
+     */
     private fun closeAsr() {
-        asr?.cancel()
+        val client = asr ?: return
         asr = null
+        client.finish()
+        scope.launch { kotlinx.coroutines.delay(1500); client.cancel() }
     }
 
     /** 一句完整命令收齐 → 发给网关。 */
