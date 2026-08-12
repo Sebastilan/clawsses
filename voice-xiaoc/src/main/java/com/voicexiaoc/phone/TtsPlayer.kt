@@ -31,6 +31,21 @@ class TtsPlayer(private val context: Context) {
     private var focusRequest: AudioFocusRequest? = null
 
     /**
+     * 待播队列。网关把长回复切成句子逐段下发（tts_audio 带 seq/final），到齐一段
+     * 播一段，首字入耳就不用等整段合成完（实测长回复 8.95s → 3.51s）。
+     *
+     * 队列必须在这一层，不能让每条消息各自 play —— 旧的 [playBase64] 一上来就
+     * stop()，第二段到达会把第一段掐掉，结果是只听得到最后一句。
+     *
+     * 排队的判断逻辑在 [PlaybackQueue]（纯 Kotlin，有单测）；这里只管把音频
+     * 喂给 MediaPlayer。
+     */
+    private val queue = PlaybackQueue<Segment>()
+    private var onDrained: (() -> Unit)? = null
+
+    private class Segment(val base64: String, val format: String)
+
+    /**
      * Forwarded to VoiceXiaocService -> ws.sendLog, since Android's own Log.*
      * is invisible once the phone is out on the road — this is the only way
      * to diagnose "TTS silently didn't play" reports after the fact (e.g.
@@ -106,31 +121,74 @@ class TtsPlayer(private val context: Context) {
      * since AEC alone did not reliably prevent the phone hearing its own TTS
      * and re-transcribing it, causing a self-talk echo loop).
      */
-    fun playBase64(base64: String, format: String = "mp3", onDone: (() -> Unit)? = null) {
-        if (base64.isBlank()) { onDone?.invoke(); return }
-        try {
-            val bytes = Base64.decode(base64, Base64.DEFAULT)
-            val file = File(context.cacheDir, "vx-tts.$format")
-            FileOutputStream(file).use { it.write(bytes) }
-            stop()
+    fun playBase64(base64: String, format: String = "mp3", onDone: (() -> Unit)? = null) =
+        enqueue(base64, format, isFinal = true, onDone = onDone)
+
+    /**
+     * 把一段音频排进队列；空闲时立刻开播，正在播就等前一段放完。
+     *
+     * [isFinal] 标记这是本轮最后一段。**队列空了不等于说完了** —— 网络慢于播放
+     * 是常态，中间空一下下一段就到了；只有播完带 final 的那段才算说完，才回调
+     * [onDone]（Service 拿它重开麦做跟进）。整段模式（不分句）isFinal 恒为 true，
+     * 行为与从前完全一致。
+     */
+    fun enqueue(base64: String, format: String = "mp3", isFinal: Boolean, onDone: (() -> Unit)? = null) {
+        if (base64.isBlank()) { if (isFinal) onDone?.invoke(); return }
+        if (onDone != null) onDrained = onDone
+        if (queue.enqueue(Segment(base64, format), isFinal)) {
+            // 焦点在整轮的首尾各要一次。**每段都申请会让车机在段间反复 ducking**，
+            // 接缝立刻就听出来了 —— 分句播报的全部意义就是让人听不出接缝。
             requestFocus()
+            playNext()
+        }
+    }
+
+    private fun playNext() {
+        val seg = queue.next()
+        if (seg == null) {
+            // 队列见底：可能是说完了，也可能只是下一段还在路上（见 PlaybackQueue）
+            if (queue.isRoundDone()) finishRound()
+            return
+        }
+        try {
+            val bytes = Base64.decode(seg.base64, Base64.DEFAULT)
+            // 文件名带序号：同名文件会被下一段覆写，而 MediaPlayer 还在读它。
+            val file = File(context.cacheDir, "vx-tts-${fileSeq++ % 4}.${seg.format}")
+            FileOutputStream(file).use { it.write(bytes) }
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(playbackAttrs)
                 setDataSource(file.absolutePath)
-                setOnCompletionListener { mp -> abandonFocus(); mp.release(); if (mediaPlayer === mp) mediaPlayer = null; onLog?.invoke("info", "tts playback completed"); onDone?.invoke() }
+                setOnCompletionListener { mp ->
+                    mp.release(); if (mediaPlayer === mp) mediaPlayer = null
+                    playNext()
+                }
                 setOnErrorListener { mp, what, extra ->
                     onLog?.invoke("error", "MediaPlayer error what=$what extra=$extra")
-                    abandonFocus(); mp.release(); if (mediaPlayer === mp) mediaPlayer = null; onDone?.invoke(); true
+                    mp.release(); if (mediaPlayer === mp) mediaPlayer = null
+                    playNext()   // 一段坏了就跳过它，别让整轮哑掉
+                    true
                 }
                 prepare()
                 start()
-                logRouting(this)
+                if (fileSeq == 1L) logRouting(this)   // 路由每轮记一次就够
             }
-            onLog?.invoke("info", "playing ${bytes.size}B $format audio")
+            onLog?.invoke("info", "playing ${bytes.size}B ${seg.format}, 队列剩 ${queue.size}")
         } catch (e: Exception) {
-            onLog?.invoke("error", "playBase64 failed: ${e.message}")
-            onDone?.invoke()
+            onLog?.invoke("error", "播放段失败: ${e.message}")
+            playNext()
         }
+    }
+
+    private var fileSeq = 0L
+
+    /** 一轮说完：放掉焦点、复位状态、通知调用方可以重开麦了。 */
+    private fun finishRound() {
+        fileSeq = 0
+        abandonFocus()
+        onLog?.invoke("info", "tts playback completed")
+        val cb = onDrained
+        onDrained = null
+        cb?.invoke()
     }
 
     /**
@@ -164,10 +222,21 @@ class TtsPlayer(private val context: Context) {
         }
     }
 
+    /**
+     * 立刻闭嘴。**必须连队列一起清空** —— 打断时只停当前这段，后面排着的还会
+     * 接着播，表现就是"喊了停，它顿一下又自顾自说下去"。
+     *
+     * 不回调 [onDrained]：这是被打断，不是说完了；调用方（状态机）自己已经
+     * 决定了下一步去哪，不该再收到一个"播完了，去开跟进窗口"的通知。
+     */
     fun stop() {
+        val pending = queue.clear()
+        fileSeq = 0
+        onDrained = null
         try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
         mediaPlayer = null
         abandonFocus()
+        if (pending > 0) onLog?.invoke("info", "打断播报，丢弃排队中的 $pending 段")
     }
 
     fun cleanup() = stop()

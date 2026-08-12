@@ -47,7 +47,12 @@ class VoiceXiaocService : Service() {
         // 车里旁边一直有人说话,窗口越长踩中家人对话、把它当指令上云的概率越高。
         // 2026-08-10 统帅定:8s → 5s。
         private const val WAKE_ARM_TIMEOUT_MS = 5000L  // armed but said nothing at all yet
-        private const val ARM_SILENCE_MS = 2500L       // armed, said something, now paused — submit
+        // 说完话到发出去之间的静音等待。这是纯等待 —— 他已经说完了，我们还在等
+        // 他会不会继续说。2500ms 占了整条链路延迟的三分之一（实测一轮 7.2s 里
+        // 有 2.5s 是它）。砍到 1200ms：中文一句话的自然停顿约 300-600ms，1.2s
+        // 足够区分"说完了"和"喘口气"，再长就是白等。
+        // 代价：说话中间停顿超过 1.2 秒会被切成两句。真被切了就调回去。
+        private const val ARM_SILENCE_MS = 1200L       // armed, said something, now paused — submit
 
         @Volatile var instance: VoiceXiaocService? = null
             private set
@@ -69,6 +74,9 @@ class VoiceXiaocService : Service() {
     private val binder = LocalBinder()
     private val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
+
+    /** 本轮播报里出没出现过唤醒词（决定播报期间开不开麦，见 ttsAudio 收集处）。 */
+    @Volatile private var roundHasWakeWord = false
 
     lateinit var config: ConfigStore; private set
     lateinit var ws: WsClient; private set
@@ -166,13 +174,20 @@ class VoiceXiaocService : Service() {
             ws.ttsAudio.collect { a ->
                 // 回复文本里若正好含唤醒词(如"祝你健康顺利")，播报期间闭麦，
                 // 免得小C把自己打断。
-                machine.onSpeaking(allowBargeIn = !a.text.contains(WAKE_WORD))
+                //
+                // 分句流式下这个判断要对**整轮**生效：唤醒词可能出现在第三段，
+                // 而第一段到达时就得决定开不开麦。所以任何一段撞上唤醒词，就把
+                // 本轮剩下的时间都闭麦 —— 宁可这一轮打断不了，也不能自己把自己
+                // 打断（那会卡在"说一句就中断"的死循环里）。
+                if (a.text.contains(WAKE_WORD)) roundHasWakeWord = true
+                machine.onSpeaking(allowBargeIn = !roundHasWakeWord)
                 // Half-duplex: pause the mic for the duration of playback. AEC
                 // alone didn't reliably stop the phone hearing its own TTS
                 // through the speaker and re-transcribing it as user speech
                 // (self-talk echo loop) — the surest fix is to just not listen
                 // while we're talking.
-                tts.playBase64(a.base64, a.format, onDone = {
+                tts.enqueue(a.base64, a.format, isFinal = a.isFinal, onDone = {
+                    roundHasWakeWord = false
                     scope.launch {
                         kotlinx.coroutines.delay(300) // 等房间混响拖尾散掉
                         machine.onSpoken()

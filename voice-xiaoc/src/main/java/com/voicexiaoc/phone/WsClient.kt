@@ -77,13 +77,19 @@ class WsClient(private val scope: CoroutineScope) {
 
     // Reply events surfaced to the app (text and/or TTS audio).
     data class ReplyEvent(val id: String?, val text: String, val isEcho: Boolean)
-    data class TtsEvent(val id: String?, val format: String, val base64: String, val text: String)
+    /**
+     * [seq]/[isFinal] 只在网关开了分句流式（XIAOC_TTS_STREAM=1）时才有：一条回复
+     * 被切成多段先后下发。整段模式下网关不带这两个字段，此时 seq=null、
+     * isFinal=true，行为与从前一致 —— 新旧网关都能对上。
+     */
+    data class TtsEvent(val id: String?, val format: String, val base64: String, val text: String,
+                        val seq: Int? = null, val isFinal: Boolean = true)
     data class PushEvent(val level: String, val text: String, val tts: TtsEvent?)
 
     private val _replies = MutableSharedFlow<ReplyEvent>(extraBufferCapacity = 32)
     val replies = _replies.asSharedFlow()
 
-    private val _ttsAudio = MutableSharedFlow<TtsEvent>(extraBufferCapacity = 8)
+    private val _ttsAudio = MutableSharedFlow<TtsEvent>(extraBufferCapacity = 32)  // 分句流式一轮十几段
     val ttsAudio = _ttsAudio.asSharedFlow()
 
     private val _pushes = MutableSharedFlow<PushEvent>(extraBufferCapacity = 8)
@@ -269,9 +275,17 @@ class WsClient(private val scope: CoroutineScope) {
                         id = json.get("id")?.asString,
                         format = json.get("format")?.asString ?: "mp3",
                         base64 = json.get("data")?.asString ?: "",
-                        text = json.get("text")?.asString ?: ""
+                        text = json.get("text")?.asString ?: "",
+                        seq = json.get("seq")?.asInt,
+                        // 老网关不发 final，那就是整段一条 —— 当作末段，否则永远等不到收尾
+                        isFinal = json.get("final")?.asBoolean ?: true
                     )
-                    if (evt.base64.isNotBlank()) _ttsAudio.tryEmit(evt)
+                    // 分句流式下一轮能有十几段，缓冲区满了 tryEmit 会静默丢帧 ——
+                    // 表现是"某句话中间少了一截"，不记日志就永远查不出来。
+                    if (evt.base64.isNotBlank() && !_ttsAudio.tryEmit(evt)) {
+                        Log.w(TAG, "tts_audio 缓冲区满，丢了 seq=${evt.seq}")
+                        sendLog("warn", TAG, "tts_audio 缓冲区满，丢了 seq=${evt.seq}")
+                    }
                 }
                 "push" -> {
                     val tts = json.getAsJsonObject("tts")?.let {
