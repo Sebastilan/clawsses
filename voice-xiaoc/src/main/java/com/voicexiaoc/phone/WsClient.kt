@@ -35,7 +35,21 @@ class WsClient(private val scope: CoroutineScope) {
         private const val PING_INTERVAL_MS = 30_000L
         private const val PONG_TIMEOUT_MS = 75_000L   // 2.5 个心跳周期没回音 = 连接已死
         private const val OUTBOX_TTL_MS = 60_000L     // 超过 1 分钟的命令不再补发
-        const val CLIENT_VERSION = "0.1.0"
+        /**
+         * 真实 APK 版本。**以前这里硬编码 "0.1.0"**，从 v0.1 一路发到 v0.7 网关
+         * 看到的都是 0.1.0，等于服务端根本不知道对面是哪个版本 —— 想按版本做
+         * 兼容处理时才发现这个数字是假的。
+         */
+        val CLIENT_VERSION: String = BuildConfig.VERSION_NAME
+
+        /**
+         * 本端支持的能力，随 connect 上报。服务端据此决定发什么格式，
+         * **不靠"先发 APK 再改服务端"的人工掐时序** —— 那中间必然有一段
+         * 新服务端配旧 APK 的窗口，表现是长回复只听得到最后一句。
+         *
+         * tts_stream：能把多段 tts_audio 排队顺序播（见 PlaybackQueue）。
+         */
+        val CAPABILITIES = listOf("tts_stream")
     }
 
     // Connection config
@@ -176,7 +190,8 @@ class WsClient(private val scope: CoroutineScope) {
             "type" to "connect",
             "id" to "c-${nextId()}",
             "deviceId" to deviceId,
-            "clientVersion" to CLIENT_VERSION
+            "clientVersion" to CLIENT_VERSION,
+            "caps" to CAPABILITIES
         )
         if (token.isNotBlank()) frame["token"] = token
         send(gson.toJson(frame))
