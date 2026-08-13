@@ -66,6 +66,9 @@ class WsClient(private val scope: CoroutineScope) {
     private var pingJob: Job? = null
     private var shouldReconnect = false
 
+    /** 连接世代号：每次 doConnect 递增，回调靠它判断自己是否已被取代（见 doConnect）。 */
+    private val connGen = AtomicInteger(0)
+
     /**
      * 最近一次收到 pong 的时刻。移动网络的 NAT 会悄悄掐掉空闲 TCP，形成"半开连接"：
      * socket 看着还在，send() 也不报错(数据进了 OkHttp 缓冲区)，要等 TCP 重传超时
@@ -137,9 +140,24 @@ class WsClient(private val scope: CoroutineScope) {
             .header("Origin", "http://$host")
             .build()
 
+        // 世代号在建监听器之前就定好，回调只跟它比 —— **不能比 activeWs**。
+        // 2026-08-13 实测的老 bug：activeWs 是在 newWebSocket() 返回之后才赋值的，
+        // 而 onOpen 跑在 OkHttp 的 IO 线程上，可能抢在那句赋值之前触发；那一瞬
+        // activeWs 还是 null，`ws !== activeWs` 成立，onOpen 整个被 return 掉。
+        // 后果不是"偶尔漏一次"，而是网关侧从头到尾只收到过 asr_text 一种帧：
+        //   · sendConnect() 没发   → 服务端不知道版本、不知道 caps（分句流式一直没生效）
+        //   · startPingLoop() 没起 → 心跳从未跑过，半开连接看门狗形同虚设
+        //   · flushOutbox() 没调   → 专为"不丢他说的话"加的补发队列一次都没生效
+        // 用世代号后，回调与赋值顺序彻底无关。
+        val myGen = connGen.incrementAndGet()
         val newWs = client.newWebSocket(request, object : WebSocketListener() {
+            /** 这次回调是否属于已被取代的旧连接。 */
+            private fun stale() = myGen != connGen.get()
+
             override fun onOpen(ws: WebSocket, response: Response) {
-                if (ws !== activeWs) return
+                if (stale()) return
+                activeWs = ws          // 以真正握上手的那个为准，不依赖外面那句赋值
+                webSocket = ws
                 Log.i(TAG, "WebSocket opened")
                 _status.value = "Socket open — handshaking…"
                 sendConnect()
@@ -152,18 +170,18 @@ class WsClient(private val scope: CoroutineScope) {
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
-                if (ws !== activeWs) return
+                if (stale()) return
                 handleMessage(text)
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                if (ws !== activeWs) return
+                if (stale()) return
                 Log.e(TAG, "WebSocket failure: ${t.message}")
                 onDisconnected("Connection failed: ${t.message}")
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                if (ws !== activeWs) return
+                if (stale()) return
                 Log.i(TAG, "WebSocket closed: $code $reason")
                 onDisconnected("Closed: $reason")
             }
@@ -174,6 +192,7 @@ class WsClient(private val scope: CoroutineScope) {
 
     fun disconnect() {
         shouldReconnect = false
+        connGen.incrementAndGet()   // 让在途回调全部作废，别在断开后又把状态改回"已连接"
         reconnectJob?.cancel(); reconnectJob = null
         pingJob?.cancel(); pingJob = null
         activeWs = null
