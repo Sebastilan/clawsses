@@ -160,10 +160,12 @@ class WsClient(private val scope: CoroutineScope) {
                 webSocket = ws
                 Log.i(TAG, "WebSocket opened")
                 _status.value = "Socket open — handshaking…"
-                sendConnect()
                 // The gateway may reply `connected`; but even without auth the
                 // socket is usable, so optimistically mark connected on open.
+                // 先置位再握手：即便将来有人把 sendConnect 改回走 send()，也不至于
+                // 又被守卫丢掉。（握手本身已不依赖这个顺序，见 sendConnect。）
                 _connected.value = true
+                sendConnect(ws)
                 lastPongAt = System.currentTimeMillis()
                 startPingLoop()
                 flushOutbox()
@@ -204,7 +206,21 @@ class WsClient(private val scope: CoroutineScope) {
 
     // ── Phone → gateway ──────────────────────────────────────────────
 
-    private fun sendConnect() {
+    /**
+     * 握手帧**直接走 ws.send，不经过 [send]**。
+     *
+     * 2026-08-13 的第二个坑（v0.8.1 只修了竞态，没修这个）：[send] 的守卫是
+     * `ws != null && _connected.value`，而 onOpen 里的顺序是 sendConnect() 在前、
+     * `_connected.value = true` 在后 —— 于是握手帧每次都被自家守卫当成"没连上"
+     * 丢掉，日志里只留一行 "not connected, dropped"。
+     *
+     * 表现极隐蔽：**APP 一切正常**（说话、回复、位置上报都好），只是服务端永远
+     * 收不到 connect，因而不知道客户端版本和能力，分句流式一直没启用。
+     *
+     * 不靠"把赋值挪到前面"来修：那又是一个隐式的顺序依赖，下次谁重排一下就再坏。
+     * 握手本来就发生在 socket 刚握上手的确定时刻，直接用那个 ws 最直白。
+     */
+    private fun sendConnect(ws: WebSocket) {
         val frame = mutableMapOf<String, Any>(
             "type" to "connect",
             "id" to "c-${nextId()}",
@@ -213,7 +229,8 @@ class WsClient(private val scope: CoroutineScope) {
             "caps" to CAPABILITIES
         )
         if (token.isNotBlank()) frame["token"] = token
-        send(gson.toJson(frame))
+        val okSent = ws.send(gson.toJson(frame))
+        Log.i(TAG, "handshake sent=$okSent v$CLIENT_VERSION caps=$CAPABILITIES")
     }
 
     /** Report a wake-word hit (P1: not yet triggered; wired for later). */
