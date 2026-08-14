@@ -240,6 +240,28 @@ class WsClient(private val scope: CoroutineScope) {
         )))
     }
 
+    /**
+     * 唤醒命中 + 命中前那两秒的原始音频，交给网关存档，供事后校准阈值。
+     *
+     * 为什么要带音频：sherpa 的 JNI **不返回置信度**（结果里只有 keyword/tokens/
+     * timestamps），没法统计"差一点点的那些"。只能把阈值降下来提召回，再靠这些
+     * 样本事后转写核对——哪些是他真喊了、哪些是误唤醒，据此定阈值。
+     *
+     * 隐私边界（统帅 2026-08-14 明确同意上传）：**只有命中那一刻的窗口**，
+     * 不是常开录音。没命中就什么都不传，环里的数据被覆盖掉，从不离开手机。
+     *
+     * 不进发件箱：样本丢了就丢了，不值得为它占着重发队列——那是留给他说的话的。
+     */
+    fun sendWakeSample(keyword: String, pcm: ByteArray) {
+        if (pcm.isEmpty()) return
+        val b64 = android.util.Base64.encodeToString(pcm, android.util.Base64.NO_WRAP)
+        val ok = send(gson.toJson(mapOf(
+            "type" to "wake", "ts" to now(), "keyword" to keyword,
+            "sampleRate" to 16000, "audio" to b64,
+        )))
+        Log.i(TAG, "wake sample sent=$ok ${pcm.size / 32}ms")
+    }
+
     /** Send a recognized utterance. Gateway only acts on final results. */
     fun sendAsrText(text: String, final: Boolean = true, lang: String = "zh-CN"): Boolean {
         val id = "u-${nextId()}"

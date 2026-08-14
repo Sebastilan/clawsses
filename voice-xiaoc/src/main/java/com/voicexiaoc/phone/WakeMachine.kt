@@ -57,6 +57,17 @@ class WakeMachine(
     /** 关键决策的诊断说明（为什么发/为什么不发），回传网关日志。 */
     private val onDiag: (String) -> Unit = {},
 ) {
+    companion object {
+        /**
+         * 该被当成"我们自己的回声"扔掉的短句。
+         *
+         * 唤醒应答那声"我在"是我们自己放的，而它响的时候麦克风已经开着；唤醒词
+         * 本身也常被 ASR 单独出一个 final。这两种都不是他要说的话，当成命令发出去
+         * 就会凭空多一轮对话（他还没开口，小C 已经在回答"我在"了）。
+         */
+        private val ECHO_WORDS = setOf("我在", "健康顺利", "顺利健康")
+    }
+
     enum class MicOwner { NONE, KWS, ASR }
 
     enum class State { IDLE, WAKE_LISTENING, ARMED, SPEAKING, FOLLOW_UP }
@@ -218,8 +229,16 @@ class WakeMachine(
      * 若当成命令提交，会在用户真正开口前就把 ARMED 窗口关掉，表现为"喊了没反应"。
      * 网关侧也有一道同样的过滤，但那是兜底——该在源头拦住，别浪费一次云端往返。
      */
-    private fun isJunk(text: String): Boolean =
-        text.replace(Regex("[，,。.!?！？…\\s]"), "").length < 2
+    private fun isJunk(text: String): Boolean {
+        val bare = text.replace(Regex("[，,。.!?！？…\\s]"), "")
+        if (bare.length < 2) return true
+        // 唤醒应答("我在")是**我们自己放出去的声音**，而它响的时候麦克风已经开了
+        // （故意的：等它放完再开麦，他一张嘴第一个字就丢了）。所以 ASR 必然听得见，
+        // 得在这儿把它认出来扔掉，否则那声"我在"会被当成他的第一句命令发上云。
+        // 唤醒词本身同理：ASR 常把那一声单独出一个 final。
+        if (bare in ECHO_WORDS) return true
+        return false
+    }
 
     /** 链路出错：不管在哪个状态，一律安全地退回常听。 */
     fun onError() = toWakeListening()

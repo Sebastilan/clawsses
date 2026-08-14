@@ -22,6 +22,7 @@ class ConfigStore(context: Context) {
         private const val KEY_PORT = "port"
         private const val KEY_TOKEN = "token"
         private const val KEY_AUTO_CONNECT = "auto_connect"
+        private const val KEY_WAKE_ACK = "wake_ack"
         private const val KEY_VERSION_URL = "version_url"
         private const val KEY_ASR_SECRET_ID = "asr_secret_id"
         private const val KEY_ASR_SECRET_KEY = "asr_secret_key"
@@ -53,6 +54,15 @@ class ConfigStore(context: Context) {
     var autoConnect: Boolean
         get() = prefs.getBoolean(KEY_AUTO_CONNECT, true)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_CONNECT, value).apply()
+
+    /**
+     * 唤醒后是否应答一声"我在"。默认开 —— 在此之前喊完唤醒词毫无反馈，
+     * 开车时看不见屏幕，只能试着说一句看有没有反应。留开关是因为这一声要占
+     * 半秒钟，将来若换成更轻的提示音或者他嫌吵，能一键关掉。
+     */
+    var wakeAck: Boolean
+        get() = prefs.getBoolean(KEY_WAKE_ACK, true)
+        set(value) = prefs.edit().putBoolean(KEY_WAKE_ACK, value).apply()
 
     /** URL of the remote version manifest used by VersionChecker for auto-OTA. */
     var versionUrl: String

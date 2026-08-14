@@ -24,8 +24,8 @@ android {
         targetSdk = 34
         // Bump versionCode on every release; VersionChecker compares this
         // against the remote version.json to decide whether to auto-OTA.
-        versionCode = 17
-        versionName = "0.8.2"
+        versionCode = 18
+        versionName = "0.9.0"
 
         buildConfigField("String", "TENCENT_SECRET_ID",
             "\"${localProperties.getProperty("tencent.secretId", "")}\"")

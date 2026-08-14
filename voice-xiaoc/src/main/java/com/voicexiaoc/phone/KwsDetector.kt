@@ -41,7 +41,13 @@ class KwsDetector(context: Context) {
             ),
             keywordsFile = "$MODEL_DIR/keywords.txt",
             keywordsScore = 1.0f,
-            keywordsThreshold = 0.25f,
+            // 0.25 → 0.12（2026-08-14）。统帅反馈"有时候生效有时候不生效"，
+            // 那是召回问题：阈值卡太严就漏。降阈值提召回，代价是误唤醒变多 ——
+            // 但误唤醒的代价很小（麦克风白开 5 秒就自己回去了，而且现在有"我在"
+            // 那声应答，他听得见），漏唤醒的代价是他喊了一嗓子没人理。
+            // 每次命中的音频会传回网关存档（见 WakeSampler / WsClient.sendWakeSample），
+            // 攒够样本再回来把这个数定死。
+            keywordsThreshold = 0.12f,
             numTrailingBlanks = 2,
         ),
     )

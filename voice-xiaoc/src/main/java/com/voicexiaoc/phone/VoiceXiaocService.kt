@@ -85,6 +85,8 @@ class VoiceXiaocService : Service() {
     lateinit var versionChecker: VersionChecker; private set
     lateinit var audio: AudioCapture; private set
     lateinit var kws: KwsDetector; private set
+    /** 唤醒前情环形缓冲：命中时把之前那两秒一起交上去校准阈值（见 WakeSampler）。 */
+    private val wakeSampler = WakeSampler()
     lateinit var locator: LocationReporter; private set
 
     // Last reply text surfaced to the UI.
@@ -302,8 +304,13 @@ class VoiceXiaocService : Service() {
         when (owner) {
             WakeMachine.MicOwner.NONE -> Unit
             WakeMachine.MicOwner.KWS -> audio.startPcm(scope) { pcm ->
+                // 无条件写环：命中那一刻再录就晚了，唤醒词已经说完了
+                wakeSampler.feed(pcm)
                 kws.feed(pcm)?.let { hit ->
-                    ws.sendLog("info", "KwsDetector", "local wake hit: $hit")
+                    ws.sendLog("info", "KwsDetector",
+                        "local wake hit: $hit (前情 ${wakeSampler.bufferedMs()}ms)")
+                    ws.sendWakeSample(hit, wakeSampler.snapshot())
+                    wakeSampler.clear()   // 这一窗交出去了，别混进下一次
                     scope.launch { machine.onWake() }
                 }
             }
@@ -403,10 +410,31 @@ class VoiceXiaocService : Service() {
         when (state) {
             WakeMachine.State.IDLE -> _voiceState.value = VoiceState.Idle
             WakeMachine.State.WAKE_LISTENING -> _voiceState.value = VoiceState.WakeListening
-            WakeMachine.State.ARMED, WakeMachine.State.FOLLOW_UP ->
+            WakeMachine.State.ARMED -> {
                 _voiceState.value = VoiceState.Listening
+                playWakeAck()
+            }
+            // FOLLOW_UP 不应答：他刚听完回答，知道你还在，再"我在"一声纯属聒噪
+            WakeMachine.State.FOLLOW_UP -> _voiceState.value = VoiceState.Listening
             WakeMachine.State.SPEAKING -> Unit   // 播报中，UI 已由 Reply 状态占用
         }
+    }
+
+    /**
+     * 唤醒应答：一声"我在"。
+     *
+     * 在此之前，喊完唤醒词是**没有任何反馈**的 —— 他不知道听没听见，只能试着说
+     * 一句看有没有反应，说错了还得重来。开车时看不见屏幕，这是最难受的一环。
+     * （素材 res/raw/wake_ack.mp3 和 [TtsPlayer.playRaw] 其实早就写好了，
+     *   只是一直没人调用它 —— 建好没接线，和当初 WakeMachine 是同一类事故。）
+     *
+     * **不等它放完就开麦**（麦克风归属由状态机在 ARMED 时已经切给 ASR）：
+     * 这一声约半秒，等它放完再开麦，他"我在"刚落音就开口的话，第一个字就丢了。
+     * 代价是 ASR 会听见这半秒的"我在" —— 由 [WakeMachine.isJunk] 那道过滤拦掉。
+     */
+    private fun playWakeAck() {
+        if (!config.wakeAck) return
+        tts.playRaw(R.raw.wake_ack)
     }
 
     private fun installCrashReporter() {
