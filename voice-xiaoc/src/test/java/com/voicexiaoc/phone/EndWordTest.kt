@@ -60,4 +60,13 @@ class EndWordTest {
         assertTrue(isEnd("查一下天气 OVER"))
         assertTrue(isEnd("查一下天气 Over"))
     }
+
+    @Test
+    fun `over 的中文谐音也要认 —— 中文引擎把英文转成汉字是常事`() {
+        // 统帅用的就是 over。ASR 引擎已换成中英混合的 16k_zh_en，但万一它仍然
+        // 转成汉字，这个词认不出来 = 他说了 over 却石沉大海，比没这功能还糟。
+        assertTrue(isEnd("查一下天气 欧佛"))
+        assertTrue(isEnd("查一下天气奥弗"))
+        assertEquals("查一下天气", WakeMachine.stripEndWord("查一下天气 欧佛"))
+    }
 }

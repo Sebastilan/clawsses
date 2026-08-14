@@ -80,7 +80,12 @@ class WakeMachine(
          * （"好了没有""这事好了之后"），当成结束会把他的话拦腰截断。
          */
         private val END_WORDS = listOf(
-            "over", "完毕", "说完了", "我说完了", "就这样", "就这些", "结束",
+            // 统帅用的是 **over**（2026-08-14 特意纠正过：不是"完毕"）。
+            // 为它把 ASR 引擎换成了中英混合的 16k_zh_en（见 ConfigStore.asrEngine），
+            // 但仍留一组谐音兜底 —— 中文引擎把英文词转成汉字是常事，而这个词一旦
+            // 认不出来，他说了"over"却石沉大海，体验比没有这个功能还糟。
+            "over", "欧佛", "欧弗", "奥弗", "奥佛", "欧沃", "奥沃", "偶发",
+            "完毕", "说完了", "我说完了", "就这样", "就这些", "结束",
         )
 
         /**
@@ -127,6 +132,8 @@ class WakeMachine(
      * 所以提交时把最后一段 partial 折进来兜底。
      */
     private var lastPartial = ""
+    /** 本轮是否由结束词触发提交（供统计"他到底用不用 over"，见 submit）。 */
+    private var submittedByEndWord = false
 
     private var armTimer: Job? = null
     private var silenceTimer: Job? = null
@@ -218,6 +225,7 @@ class WakeMachine(
         // 说了结束词就立刻发，不再等静音 —— 这是"我说完了"的显式信号，
         // 比任何计时器都准。见 [stripEndWord]。
         if (endWordIndex(heard.toString() + lastPartial) >= 0) {
+            submittedByEndWord = true
             onDiag("听到结束词，立即提交（不等静音）")
             submit()
             return
@@ -237,8 +245,14 @@ class WakeMachine(
         // 去理解("完毕"是什么意思?),甚至跟着学舌。
         val raw = stripEndWord((heard.toString() + lastPartial).trim())
         val text = raw.takeUnless { isJunk(it) } ?: ""
-        onDiag("submit: final=${heard.length}字 partial兜底=${lastPartial.length}字 -> " +
+        // 这一轮是**结束词**触发的还是**静音超时**触发的 —— 必须能数出来。
+        // 眼镜项目的教训是"关键词已实现但用户未必每句都用"，光凭感觉说不清；
+        // 记下路径就能统计他实际用不用，进而决定静音兜底该定多少秒。
+        // 只记路径不记内容，不碰隐私。
+        onDiag("submit[${if (submittedByEndWord) "结束词" else "静音超时"}]: " +
+               "final=${heard.length}字 partial兜底=${lastPartial.length}字 -> " +
                if (text.isEmpty()) "空，不发" else "${text.length}字，发出")
+        submittedByEndWord = false
         heard.setLength(0)
         lastPartial = ""
         onCloseAsr()

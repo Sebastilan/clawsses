@@ -23,6 +23,7 @@ class ConfigStore(context: Context) {
         private const val KEY_TOKEN = "token"
         private const val KEY_AUTO_CONNECT = "auto_connect"
         private const val KEY_WAKE_ACK = "wake_ack"
+        private const val KEY_ASR_ENGINE = "asr_engine"
         private const val KEY_VERSION_URL = "version_url"
         private const val KEY_ASR_SECRET_ID = "asr_secret_id"
         private const val KEY_ASR_SECRET_KEY = "asr_secret_key"
@@ -63,6 +64,20 @@ class ConfigStore(context: Context) {
     var wakeAck: Boolean
         get() = prefs.getBoolean(KEY_WAKE_ACK, true)
         set(value) = prefs.edit().putBoolean(KEY_WAKE_ACK, value).apply()
+
+    /**
+     * 腾讯 ASR 引擎。默认 `16k_zh_en`（中英大模型），不是纯中文的 `16k_zh`。
+     *
+     * 换的原因很具体：统帅的结束词是英文 **over**，而纯中文引擎多半把它转成
+     * 谐音汉字，`endsWith("over")` 就永远命中不了。16k_zh_en 支持中英混合，
+     * 腾讯 2025-03 专门优化过混合场景与专有名词。
+     *
+     * **做成可配置是因为换引擎影响的是全部识别，不只那一个词。** 万一中文识别
+     * 变差，改这里切回 "16k_zh" 就行，不用重新发 APK。
+     */
+    var asrEngine: String
+        get() = prefs.getString(KEY_ASR_ENGINE, "16k_zh_en") ?: "16k_zh_en"
+        set(value) = prefs.edit().putString(KEY_ASR_ENGINE, value).apply()
 
     /** URL of the remote version manifest used by VersionChecker for auto-OTA. */
     var versionUrl: String

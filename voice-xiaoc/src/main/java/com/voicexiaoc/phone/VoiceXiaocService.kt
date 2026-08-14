@@ -336,7 +336,7 @@ class VoiceXiaocService : Service() {
             secretId = config.asrSecretId,
             secretKey = config.asrSecretKey,
             appId = config.asrAppId,
-            engine = "16k_zh",
+            engine = config.asrEngine,
             voiceFormat = 1,
         )
         asr = client
