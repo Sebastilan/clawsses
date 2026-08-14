@@ -66,6 +66,49 @@ class WakeMachine(
          * 就会凭空多一轮对话（他还没开口，小C 已经在回答"我在"了）。
          */
         private val ECHO_WORDS = setOf("我在", "健康顺利", "顺利健康")
+
+        /**
+         * 句末结束词 —— 说了就立刻提交，不再等静音。
+         *
+         * 这是"我说完了"的**显式信号**，比任何计时器都准：计时器只能猜，
+         * 而这是他亲口说的。之前在眼镜项目上验证过（super-brain 的
+         * asr-pipeline.md，2026-04-25），但那边留了条实测教训：
+         * **「已实现但用户实测时未必每句都用」** —— 所以它只是快车道，
+         * 不能当唯一机制，静音兜底仍然必须在。
+         *
+         * 只认**句尾**出现（见 [endWordIndex]）：句中说到"好了"很常见
+         * （"好了没有""这事好了之后"），当成结束会把他的话拦腰截断。
+         */
+        private val END_WORDS = listOf(
+            "over", "完毕", "说完了", "我说完了", "就这样", "就这些", "结束",
+        )
+
+        /**
+         * 结束词在句尾的起始下标；没有返回 -1。
+         *
+         * **只看尾巴**：允许后面跟标点/空白，但不许再有别的字。
+         * "就这样吧我再想想" 里的"就这样"不算 —— 他还在说。
+         */
+        fun endWordIndex(text: String): Int {
+            val t = text.trimEnd { it.isWhitespace() || it in "。，,.!?！？…、" }
+            for (w in END_WORDS) {
+                if (t.endsWith(w, ignoreCase = true)) {
+                    // 光一个结束词、前面什么都没说，不算命令（多半是误识别）
+                    val head = t.dropLast(w.length).trim { it.isWhitespace() || it in "。，,.!?！？…、" }
+                    if (head.isEmpty()) return -1
+                    return t.length - w.length
+                }
+            }
+            return -1
+        }
+
+        /** 去掉句尾的结束词——那是控制信号，不该当成话的内容发给小C。 */
+        fun stripEndWord(text: String): String {
+            val i = endWordIndex(text)
+            if (i < 0) return text
+            val t = text.trimEnd { it.isWhitespace() || it in "。，,.!?！？…、" }
+            return t.substring(0, i).trim { it.isWhitespace() || it in "。，,.!?！？…、" }
+        }
     }
 
     enum class MicOwner { NONE, KWS, ASR }
@@ -172,6 +215,13 @@ class WakeMachine(
         }
         if (text.isBlank()) return
         armTimer?.cancel(); armTimer = null   // 已经开口了，「没开口」超时不再适用
+        // 说了结束词就立刻发，不再等静音 —— 这是"我说完了"的显式信号，
+        // 比任何计时器都准。见 [stripEndWord]。
+        if (endWordIndex(heard.toString() + lastPartial) >= 0) {
+            onDiag("听到结束词，立即提交（不等静音）")
+            submit()
+            return
+        }
         silenceTimer?.cancel()
         silenceTimer = scope.launch {
             delay(silenceSubmitMs)
@@ -183,7 +233,9 @@ class WakeMachine(
     fun submit() {
         if (!isArmed) return
         cancelTimers()
-        val raw = (heard.toString() + lastPartial).trim()
+        // 结束词是控制信号,不是话的内容 —— 带着"完毕"发过去,小C 会当成他说的话
+        // 去理解("完毕"是什么意思?),甚至跟着学舌。
+        val raw = stripEndWord((heard.toString() + lastPartial).trim())
         val text = raw.takeUnless { isJunk(it) } ?: ""
         onDiag("submit: final=${heard.length}字 partial兜底=${lastPartial.length}字 -> " +
                if (text.isEmpty()) "空，不发" else "${text.length}字，发出")

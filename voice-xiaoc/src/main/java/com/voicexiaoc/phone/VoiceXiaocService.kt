@@ -47,12 +47,19 @@ class VoiceXiaocService : Service() {
         // 车里旁边一直有人说话,窗口越长踩中家人对话、把它当指令上云的概率越高。
         // 2026-08-10 统帅定:8s → 5s。
         private const val WAKE_ARM_TIMEOUT_MS = 5000L  // armed but said nothing at all yet
-        // 说完话到发出去之间的静音等待。这是纯等待 —— 他已经说完了，我们还在等
-        // 他会不会继续说。2500ms 占了整条链路延迟的三分之一（实测一轮 7.2s 里
-        // 有 2.5s 是它）。砍到 1200ms：中文一句话的自然停顿约 300-600ms，1.2s
-        // 足够区分"说完了"和"喘口气"，再长就是白等。
-        // 代价：说话中间停顿超过 1.2 秒会被切成两句。真被切了就调回去。
-        private const val ARM_SILENCE_MS = 1200L       // armed, said something, now paused — submit
+        // 静音兜底。**主路是结束词**（说"完毕/就这样/over"立刻发，见 WakeMachine
+        // 的 END_WORDS），这个数只在他忘了说结束词时才生效。
+        //
+        // 所以它可以放长：兜底越长，越不会把他说到一半的话截断；而"慢"由结束词
+        // 那条快车道解决。统帅 2026-08-14 定 3 秒（他提的是 3~5 秒，取下限）。
+        //
+        // 但眼镜项目那边有条实测教训要记着：同一套设计在 super-brain 上线过，
+        // 结论是「已实现但用户实测时未必每句都用」—— 他忘了说的时候就要干等这么久。
+        // 真觉得慢，先调这一个数。
+        //
+        // 注意这不是他停顿后的全部等待：腾讯 ASR 自己还有 800ms 的 VAD 静音判句
+        // （TencentAsrClient.vadSilenceMs），两段是串起来的。
+        private const val ARM_SILENCE_MS = 3000L       // armed, said something, now paused — submit
 
         @Volatile var instance: VoiceXiaocService? = null
             private set
