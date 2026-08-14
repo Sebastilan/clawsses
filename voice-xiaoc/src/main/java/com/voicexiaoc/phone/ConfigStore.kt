@@ -66,17 +66,24 @@ class ConfigStore(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_WAKE_ACK, value).apply()
 
     /**
-     * 腾讯 ASR 引擎。默认 `16k_zh_en`（中英大模型），不是纯中文的 `16k_zh`。
+     * 腾讯 ASR 引擎。**默认必须是 `16k_zh`（纯中文）。**
      *
-     * 换的原因很具体：统帅的结束词是英文 **over**，而纯中文引擎多半把它转成
-     * 谐音汉字，`endsWith("over")` 就永远命中不了。16k_zh_en 支持中英混合，
-     * 腾讯 2025-03 专门优化过混合场景与专有名词。
+     * 2026-08-14 事故：为了让英文结束词 "over" 被识别，把默认改成了中英大模型
+     * 引擎 `16k_zh_en`，结果统帅一装上、第一次唤醒就报
+     *   asr_error[4004]: 资源包耗尽，请开通后付费或者购买资源包
+     * 他的语音入口整整停了两小时（唤醒有反应、"我在"也响，但说的话根本转不出来）。
      *
-     * **做成可配置是因为换引擎影响的是全部识别，不只那一个词。** 万一中文识别
-     * 变差，改这里切回 "16k_zh" 就行，不用重新发 APK。
+     * 根因：**大模型引擎不在预付费资源包覆盖范围内**。腾讯计费文档原文——
+     * "扣费顺序为免费额度 > 预付费 > 后付费。后付费需手动开启，支持跨境和
+     * **大模型版**服务"。也就是说 16k_zh_en 必须单独开通后付费才能用。
+     *
+     * 教训：**换识别引擎不是换个字符串，是换了一档计费**。改这个字段之前，
+     * 先确认那档服务在他账号上真的开通了、真的能跑通一次。
+     *
+     * 想再试大模型引擎：先去腾讯云开后付费，再把这里设成 "16k_zh_en"。
      */
     var asrEngine: String
-        get() = prefs.getString(KEY_ASR_ENGINE, "16k_zh_en") ?: "16k_zh_en"
+        get() = prefs.getString(KEY_ASR_ENGINE, "16k_zh") ?: "16k_zh"
         set(value) = prefs.edit().putString(KEY_ASR_ENGINE, value).apply()
 
     /** URL of the remote version manifest used by VersionChecker for auto-OTA. */
